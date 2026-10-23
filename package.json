@@ -2,7 +2,16 @@
   "name": "@xeplr/workflow-engine",
   "version": "3.0.2",
   "license": "MIT",
-  "description": "The workflow engine — workflow's own database and tables, the action catalog, starting and resuming runs, and the flows facade. No HTTP: @xeplr/workflow-api puts the routes on top.",
+  "description": "The free workflow engine: runs, actions as steps, branching, waits, and triggers — manual, API, a schedule, a job finishing. No HTTP: @xeplr/workflow-api puts the routes on top.",
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "automation",
+    "triggers",
+    "cron",
+    "jobs",
+    "engine"
+  ],
   "main": "index.js",
   "files": [
     "index.js",
