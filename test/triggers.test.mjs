@@ -149,6 +149,7 @@ try {
     check('D ran two hops on, same period', dRan && same(dRan.input.window, W), dRan)
     const dOcc = await until(async () => { const o = await JobOccurrence.query().where({ jobId: D.id }).first(); return o && o.status === 'success' ? o : null })
     check('D was handed B\'s ranges and the path', dOcc && same(dOcc.chain.previous.given, W) && same(dOcc.chain.path, [A.id, B.id]), dOcc && dOcc.chain)
+    check('...and the carried count as a number, not text', dOcc && dOcc.chain.carry.rows === 7, dOcc && dOcc.chain.carry)
     const runA = await runOf(wA.id, 'success')
     check('"After A" ran as an ordinary workflow and finished once B did', Boolean(runA) && runA.trigger === 'job')
     check('...started with what fired it, as triggerData', runA && runA.triggerData.jobId === A.id && runA.triggerData.status === 'success' && same(runA.triggerData.window, W), runA && runA.triggerData)

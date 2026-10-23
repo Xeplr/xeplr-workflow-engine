@@ -207,6 +207,7 @@ Branch on how a job ended with a `decide` step: it does nothing itself, and the 
 - **The period flows.** The next job gets the finished job's `window` unless the step's `inputs` set one, so a chain of workflows covers one period from its first job to its last.
 - **The next job is offered both earlier ranges**, as `@xeplr/jobs`' `previous.given` / `previous.used`.
 - **`carry`** (a `job-run` input) adds values for the jobs after it.
+- **`inputs` and `carry` keep their types.** A binding that is the whole value (`"{trigger.output.totalRows}"`) passes `7`, not `"7"`, and an object stays an object. Every other step's input is text, as bindings make it.
 - **Loops stop.** A job already on the path, or a path 25 jobs long, fails the step with a message.
 
 The next job takes only `window` and the inputs it lists in `acceptsInputs`; `@xeplr/jobs` refuses the rest, naming them.
