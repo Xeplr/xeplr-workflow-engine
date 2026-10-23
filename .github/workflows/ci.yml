@@ -1,0 +1,38 @@
+# Tests on every push and pull request, against a real Postgres.
+#
+# The suites that need a database (job chains, the routes) skip without
+# WORKFLOW_TEST_PG, so CI starts a throwaway Postgres and sets it: a green run
+# here means they ran, not that they were skipped.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: wftest
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      WORKFLOW_TEST_PG: '{"host":"127.0.0.1","port":5432,"user":"postgres","password":"wftest"}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts || npm install --ignore-scripts; else npm install --ignore-scripts; fi
+      - name: Audit (no vulnerabilities, dev included)
+        run: npm audit
+      - name: Test
+        run: npm test

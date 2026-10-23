@@ -1,0 +1,30 @@
+-- 0014_workflows_trigger.sql
+-- WHAT STARTS A RUN — a property of the FLOW, beside what comes in with it.
+--
+-- A run has always been started from outside: startFlowRun from the flows
+-- facade, runWorkflow from the builder, resumeByKey for a waiting step. None
+-- of that said, in the document itself, what is SUPPOSED to start it — so a
+-- flow that is meant to begin when a file lands looked exactly like one
+-- somebody presses a button on, and the difference lived in whoever set up
+-- the caller.
+--
+--   { "kind": "manual" }                       someone presses Start
+--   { "kind": "api" }                          another system calls it
+--   { "kind": "schedule", "cron": "0 9 * * 1" }
+--   { "kind": "file", "folder": "/hr/in", "named": "*.csv" }
+--   { "kind": "email", "mailbox": "invoices@…" }
+--
+-- JSONB, not a column per kind: what a schedule needs and what a folder watch
+-- needs have nothing in common, and the set is not finished — a hook, a queue
+-- message, a row appearing in a table are all the same idea with different
+-- settings. One shape per kind, read by whoever arms it.
+--
+-- THE ENGINE DOES NOT ARM ANYTHING YET. workflowRunner keeps starting runs
+-- when it is told to; this records the intent the designer captured, which is
+-- what the arming work (pollers for file and mailbox, the endpoint for a hook)
+-- will read when it lands. Recording it first means the flows people design
+-- today do not have to be revisited then.
+--
+-- NULL means "started however it is called" — every workflow that exists keeps
+-- behaving exactly as it does.
+ALTER TABLE workflows ADD COLUMN IF NOT EXISTS trigger JSONB;

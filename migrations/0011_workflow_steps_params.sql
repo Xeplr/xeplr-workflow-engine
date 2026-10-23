@@ -1,0 +1,27 @@
+-- 0011_workflow_steps_params.sql
+-- `params` — what this step needs the CALLER to supply when the run is
+-- started. Declared here, on the step, because the step is where you find out
+-- you need it: you are binding `{params.customerEmail}` into an email-send's
+-- `to` and there is no such parameter yet.
+--
+-- The workflow's run-start schema is the UNION of every step's declaration
+-- (see workflowRunner's collectParams), not a separate list somebody has to
+-- keep in step with these. That is the whole point of declaring it here —
+-- adding the requirement and adding the binding are one action, and deleting
+-- the step deletes the requirement with it rather than leaving a parameter
+-- the run still demands and nothing reads.
+--
+-- Same field shape as `workflows.params` and as an action's inputSchema:
+--   [{ name, type, required, default, description, order, sample? }]
+-- so the engine validates a run's params with the SAME @xeplr/schema-handler
+-- applySchema that validates a step's input against its action. One definition
+-- of what "required" means, at both levels of the product.
+--
+-- `sample` is the one addition, and it is never sent anywhere: it is what the
+-- builder's { } picker shows beside the name, so a list of parameters reads as
+-- something you can recognise rather than something you must already know.
+--
+-- Nullable, and null means "this step asks nothing of the caller" — which is
+-- every step that existed before this column did.
+
+ALTER TABLE "workflow_steps" ADD COLUMN IF NOT EXISTS "params" jsonb;

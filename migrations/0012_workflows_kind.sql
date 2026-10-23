@@ -1,0 +1,27 @@
+-- 0012_workflows_kind.sql
+-- WHAT A WORKFLOW'S STEPS ARE MADE OF — which is a question about the BUILDER,
+-- not about the engine.
+--
+-- Connecting jobs to each other opens the same canvas, saves the same rows and
+-- is driven by the same engine. The only difference is what the palette offers
+-- and what dropping something onto the canvas produces:
+--
+--   'workflow'   the action catalogue; a drop names an action
+--   'jobs'       the job list;         a drop becomes a `job-run` step whose
+--                                      values carry that job's id
+--
+-- workflowRunner NEVER READS THIS. A job step is an ordinary wait step whose
+-- action happens to call the jobs API, so teaching the engine about the
+-- distinction would buy nothing and would put a product concept ("a job") into
+-- the one file that has managed to stay ignorant of every product concept so
+-- far. If this column were dropped tomorrow every existing run would continue
+-- to behave identically.
+--
+-- A STRING, NOT A BOOLEAN, because the next one is already visible: the same
+-- canvas over saved API calls, and after that whatever else gets connected.
+-- `is_job_workflow` would have to be replaced the day that lands, and every
+-- row and query that referenced it with it.
+--
+-- Defaulted to 'workflow' so every workflow that exists today keeps opening
+-- the way it always has.
+ALTER TABLE workflows ADD COLUMN IF NOT EXISTS kind VARCHAR(32) NOT NULL DEFAULT 'workflow';

@@ -1,0 +1,49 @@
+{
+  "name": "@xeplr/workflow-engine",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "The workflow engine — workflow's own database and tables, the action catalog, starting and resuming runs, and the flows facade. No HTTP: @xeplr/workflow-api puts the routes on top.",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "lib/",
+    "models/",
+    "migrations/",
+    "migrations-tenants/",
+    "db/",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/run.mjs"
+  },
+  "author": "xeplr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Xeplr/xeplr-workflow-engine.git"
+  },
+  "peerDependencies": {
+    "@xeplr/actions": "^1.1.0",
+    "@xeplr/auth": "^1.0.0",
+    "@xeplr/db": "^1.0.0",
+    "@xeplr/expression-handler": "^2.0.0",
+    "@xeplr/schema-handler": "^1.0.0",
+    "@xeplr/utils": "^1.0.0"
+  },
+  "xeplr": {
+    "readsFromDisk": [
+      "migrations",
+      "migrations-tenants"
+    ]
+  },
+  "homepage": "https://github.com/Xeplr/xeplr-workflow-engine#readme",
+  "bugs": {
+    "url": "https://github.com/Xeplr/xeplr-workflow-engine/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@xeplr/jobs": "^2.3.0",
+    "knex": "^3.3.0"
+  }
+}
