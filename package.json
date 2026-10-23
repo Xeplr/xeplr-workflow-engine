@@ -1,6 +1,6 @@
 {
   "name": "@xeplr/workflow-engine",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "license": "MIT",
   "description": "The workflow engine — workflow's own database and tables, the action catalog, starting and resuming runs, and the flows facade. No HTTP: @xeplr/workflow-api puts the routes on top.",
   "main": "index.js",
