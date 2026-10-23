@@ -27,9 +27,10 @@ class Workflow extends BaseModel {
         description: { type: ['string', 'null'], maxLength: 1000 },
         // [{ name, type, required, default, description, order }]
         params: { type: ['array', 'null'] },
-        // WHAT STARTS A RUN, as the designer recorded it — { kind, … }, one
-        // shape per kind (see migrations/0014). The engine does not arm
-        // anything from it yet; it is the intent the arming work will read.
+        // WHAT STARTS A RUN — { kind, … }, one shape per kind (migrations/0014),
+        // acted on by lib/triggers.js: manual, api, schedule, job, and any kind
+        // a host registers. Checked on every write (below), so a trigger that
+        // could never fire is refused when it is saved, not discovered later.
         trigger: { type: ['object', 'null'] },
         status: { type: 'string', maxLength: 20 },
         // WHAT THE BUILDER OFFERS, not what the engine does — 'workflow' (the
@@ -37,7 +38,7 @@ class Workflow extends BaseModel {
         // designed in another app entirely through the /flows facade and
         // read-only in this product's own builder). workflowRunner never reads
         // it. See migrations/0012 and 0013.
-        kind: { type: 'string', enum: ['workflow', 'jobs', 'screens', 'job-chain'] },
+        kind: { type: 'string', enum: ['workflow', 'jobs', 'screens'] },
         isActive: { type: 'boolean' },
         recordCreatedDate: { type: ['string', 'null'] },
         recordModifiedDate: { type: ['string', 'null'] },
@@ -50,6 +51,12 @@ class Workflow extends BaseModel {
   $beforeInsert() {
     super.$beforeInsert();
     if (!this.status) this.status = 'draft';
+    if (this.trigger !== undefined) this.trigger = require('../lib/triggers').validate(this.trigger);
+  }
+
+  $beforeUpdate(opt, ctx) {
+    super.$beforeUpdate(opt, ctx);
+    if (this.trigger !== undefined) this.trigger = require('../lib/triggers').validate(this.trigger);
   }
 
   static get relationMappings() {

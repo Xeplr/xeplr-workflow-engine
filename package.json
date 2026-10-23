@@ -45,5 +45,8 @@
   "devDependencies": {
     "@xeplr/jobs": "^2.3.0",
     "knex": "^3.3.0"
+  },
+  "dependencies": {
+    "cron-parser": "^4.9.0"
   }
 }

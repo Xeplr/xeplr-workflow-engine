@@ -6,7 +6,8 @@ var actionCatalog = require('./lib/actionCatalog');
 var envExposed = require('./lib/envExposed');
 var workflowRunner = require('./lib/workflowRunner');
 var flows = require('./lib/flows');
-var jobChains = require('./lib/jobChains');
+var jobs = require('./lib/jobs');
+var triggers = require('./lib/triggers');
 var xcfgSetup = require('./db/xcfgSetup');
 
 // THE WORKFLOW ENGINE — everything that runs a workflow, with no HTTP in it:
@@ -39,12 +40,15 @@ var TENANT_MIGRATIONS_DIR = path.join(__dirname, 'migrations-tenants');
  * @param {Function} [config.startJob] - async (jobId, { inputs, chain,
  *   callbackUrl }) → { occurrenceId }: how this host starts a job. With
  *   @xeplr/jobs in the same process, `(id, body) => jobs.trigger(id, body)`.
- *   Used by "After this job" chains and by the job-run step. Unset, those
- *   steps fail and say so (job-run falls back to its jobsUrl over HTTP).
+ *   Used by the job-run step; unset, it falls back to its jobsUrl over HTTP.
+ * @param {boolean} [config.schedule=true] - false: do not run the schedule
+ *   tick in this process (lib/triggers.js). Two processes may both run it —
+ *   a due trigger is claimed, so it starts once — but one is enough.
+ * @param {number} [config.scheduleIntervalMs=30000] - how often it looks.
  */
 async function startEngine(config) {
   config = config || {};
-  if (config.startJob !== undefined) jobChains.setJobStarter(config.startJob);
+  if (config.startJob !== undefined) jobs.setJobStarter(config.startJob);
   if (!config.db) {
     throw new Error('startEngine: config.db is required — workflow owns its own domain data regardless of how it is mounted');
   }
@@ -179,6 +183,9 @@ async function startEngine(config) {
   // secret is only catchable if it is visible somewhere.
   envExposed.logExposure();
 
+  // Scheduled workflows start themselves from here on. The timer does not
+  // keep the process alive.
+  if (config.schedule !== false) triggers.startTicking(config.scheduleIntervalMs);
 }
 
 // Env vars a HOST embedding workflow must supply — spread into the host's
@@ -284,7 +291,18 @@ module.exports = {
   envExposed: envExposed,
   runner: workflowRunner,
   flows: flows,
-  jobChains: jobChains,
+  // What starts a workflow: the registry of kinds (manual, api, schedule,
+  // job — and a host's own via registerTrigger), the schedule tick, and what
+  // a trigger last did.
+  triggers: triggers,
+  registerTrigger: triggers.registerTrigger,
+  // Jobs as steps and as triggers. A host with @xeplr/jobs passes jobs'
+  // onFinish to jobFinished, so a finished job starts the workflows it
+  // triggers and resumes the step that started it.
+  jobs: jobs,
+  jobFinished: jobs.jobFinished,
+  // An arrow's `when` ({ field, op, value }) → the engine's condition node.
+  conditions: require('./lib/conditions'),
   xcfgSetup: xcfgSetup,
   auth: require('./lib/auth')
 };

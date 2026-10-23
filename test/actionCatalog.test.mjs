@@ -74,6 +74,8 @@ console.log('\nregistered, and deliberately not offered')
     check('...and is NOT in the catalog a palette is drawn from', !names.includes(def.name))
   })
   check('hiding one hides nothing else', names.includes('db-fetch') && names.includes('job-run'))
+  check('decide (a step that only branches) is offered', names.includes('decide'))
+  check('no job-chain actions are left', !names.some((n) => /^job-chain/.test(n)))
 }
 
 console.log('\nregistering twice')

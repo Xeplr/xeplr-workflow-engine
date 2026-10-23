@@ -49,6 +49,20 @@ class WorkflowStep extends BaseModel {
     super.$beforeInsert();
     if (!this.kind) this.kind = 'auto';
     if (!this.onError) this.onError = 'stop';
+    this.compileWhen();
+  }
+
+  $beforeUpdate(opt, ctx) {
+    super.$beforeUpdate(opt, ctx);
+    this.compileWhen();
+  }
+
+  // An arrow written as `when` ({ field, op, value }) gets its engine
+  // `condition` here, on every write — lib/conditions.js.
+  compileWhen() {
+    if (this.transitions !== undefined) {
+      this.transitions = require('../lib/conditions').compileTransitions(this.transitions, this.name || this.stepKey);
+    }
   }
 
   static get relationMappings() {

@@ -24,6 +24,8 @@ class WorkflowRun extends BaseModel {
         // element this occurrence exists to process. See WorkflowRunEdge.
         item: { type: ['object', 'null'] },
         trigger: { type: ['string', 'null'], maxLength: 64 },
+        // What fired the run, in full (lib/triggers.js) — steps read it as {trigger.*}.
+        triggerData: { type: ['object', 'null'] },
         startedAt: { type: ['string', 'null'] },
         finishedAt: { type: ['string', 'null'] },
         durationMs: { type: ['integer', 'null'] },
