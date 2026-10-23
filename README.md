@@ -62,7 +62,7 @@ engine/
 ├─ models/                  Company, Workspace, Workflow, WorkflowStep, WorkflowRun,
 │                           WorkflowStepRun, WorkflowResumeKey, WorkflowRunEdge,
 │                           WorkflowTriggerState
-├─ migrations/              0003–0015, workflow's own tables
+├─ migrations/              0003–0016, workflow's own tables
 ├─ migrations-tenants/      0001–0002: standalone workflow's companies / workspaces
 └─ test/                    run.mjs + *.test.mjs
 ```
@@ -221,10 +221,12 @@ await jobs.init({ /* … */ onFinish: (report) => engine.jobFinished(report) });
 
 `jobFinished(report)` takes `@xeplr/jobs`' finish envelope. It resumes the `job-run` step that started the job (retrying while that step parks) and starts every workflow the job triggers. Without `startJob`, `job-run` starts jobs over HTTP (`jobsUrl`, and `WORKFLOW_PUBLIC_URL` for the callback).
 
-**Job chains are gone.** Migration 0015 converted each "After this job" chain (kind `job-chain`) into an ordinary workflow:
-- it gets a `job` trigger (`when: finished`);
-- its `decide` and `job-run` steps keep the same behaviour;
+**Job chains are gone.** Migration 0015 converts each "After this job" chain (kind `job-chain`) into an ordinary workflow:
+- it gets a `job` trigger (`when: finished`) and the key `after-job-<jobId>`, the one the jobs screen's shortcut uses;
+- its `decide` and `job-run` steps keep the same behaviour, and each arrow keeps its rule's `when`;
 - conditions and bindings now read `trigger.*`.
+
+Migration 0016 repairs a database that ran 0015's first release, which left the key empty and the arrows without `when`. A single comparison gets its `when` back. A nested one still runs as before, and the jobs screen says it was changed elsewhere.
 
 ## Tests
 
@@ -245,7 +247,8 @@ No database or network needed, except `triggers.test.mjs`, which runs on a real 
 - a loop stopped
 - a workflow that cannot start, recorded as a skip
 - the schedule's first sight, its due time, two ticks starting it once, a changed cron
-- migration 0015 turning an old job chain into a workflow that runs |
+- migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
+- migration 0016 repairing one converted early, and changing nothing on a second run |
 | `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered |
 | `envExposed.test.mjs` | Nothing exposed by default; exact, case-sensitive matching; globs fail closed (against real `interpolateAll`) |
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |

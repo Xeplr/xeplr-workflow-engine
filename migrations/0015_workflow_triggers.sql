@@ -53,8 +53,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS "workflow_trigger_states_workflow_unique" ON "
 --   kind 'job-chain'           → 'workflow', with trigger
 --                                { kind: 'job', jobId, when: 'finished' }
 --                                (the decide step still routes on status)
---   key 'job-chain-<jobId>'    → none; the trigger says which job
---   'job-chain-decide' step    → 'decide' (a plain branching step)
+--   key 'job-chain-<jobId>'    → 'after-job-<jobId>', the key the jobs
+--                                screen's "After this job" shortcut keeps
+--   'job-chain-decide' step    → 'decide' (a plain branching step), each
+--                                arrow given its rule's `when` as written
 --   'job-chain-next' steps     → 'job-run', which carries the period on
 --   conditions on params.x     → trigger.x  (status, output, window, carry…)
 --   bindings {output.x} etc.   → {trigger.output.x}
@@ -65,7 +67,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS "workflow_trigger_states_workflow_unique" ON "
 UPDATE "workflow_steps" s
    SET "actionName" = 'decide',
        "values" = '{}'::jsonb,
-       "transitions" = replace(s."transitions"::text, '"params.', '"trigger.')::jsonb
+       -- Arrow N is rule N, so it takes that rule's `when` (fields now read
+       -- the trigger); the closing "nothing matched" arrow is "otherwise".
+       "transitions" = (
+         SELECT COALESCE(jsonb_agg(
+           CASE WHEN x.ord <= COALESCE(jsonb_array_length(s."values"->'rules'), 0)
+                THEN x.t || jsonb_build_object('when', regexp_replace(
+                       COALESCE(s."values"->'rules'->((x.ord - 1)::int)->'when', 'null'::jsonb)::text,
+                       '"field"\s*:\s*"(status|error|output|carry|window|jobId|given|used)', '"field": "trigger.\1', 'g')::jsonb)
+                ELSE x.t || '{"when": null}'::jsonb END
+           ORDER BY x.ord), '[]'::jsonb)
+         FROM jsonb_array_elements(replace(s."transitions"::text, '"params.', '"trigger.')::jsonb) WITH ORDINALITY AS x(t, ord))
   FROM "workflows" w
  WHERE w."id" = s."workflowId" AND w."kind" = 'job-chain' AND s."actionName" = 'job-chain-decide';
 
@@ -81,5 +93,5 @@ UPDATE "workflow_steps" s
 UPDATE "workflows"
    SET "trigger" = jsonb_build_object('kind', 'job', 'jobId', substring("key" from 11), 'when', 'finished'),
        "kind" = 'workflow',
-       "key" = NULL
+       "key" = 'after-job-' || substring("key" from 11)
  WHERE "kind" = 'job-chain' AND "key" LIKE 'job-chain-%';

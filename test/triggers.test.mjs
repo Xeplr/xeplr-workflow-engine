@@ -225,7 +225,8 @@ try {
     await engine.db.conn().raw(`UPDATE workflows SET kind = 'job-chain', key = ? WHERE id = ?`, ['job-chain-' + Y.id, oldId])
     await Step.query().insert({ id: generateId(), workflowId: oldId, stepKey: 'decide', name: 'Decide', actionName: 'decide', kind: 'auto', onError: 'stop', position: 0, values: {}, transitions: [] })
     await engine.db.conn().raw(`UPDATE workflow_steps SET "actionName" = 'job-chain-decide', "values" = ?, transitions = ? WHERE "workflowId" = ? AND "stepKey" = 'decide'`,
-      [JSON.stringify({ rules: [] }), JSON.stringify([{ condition: { left: { field: 'params.status' }, op: 'eq', right: { value: 'success' } }, mode: 'single', target: 'run_1' }, { condition: null, mode: 'single', target: 'end_success' }]), oldId])
+      [JSON.stringify({ rules: [{ when: { field: 'status', op: '=', value: 'success' }, run: B.id, inputs: { window: '{window}', region: '{output.region}' }, carry: { n: '{carry.n}' } }] }),
+        JSON.stringify([{ condition: { left: { field: 'params.status' }, op: 'eq', right: { value: 'success' } }, mode: 'single', target: 'run_1' }, { condition: null, mode: 'single', target: 'end_success' }]), oldId])
     await Step.query().insert({ id: generateId(), workflowId: oldId, stepKey: 'run_1', name: 'Run job B', actionName: 'decide', kind: 'wait', onError: 'stop', position: 1, values: {}, transitions: [] })
     await engine.db.conn().raw(`UPDATE workflow_steps SET "actionName" = 'job-chain-next', "values" = ?, transitions = ? WHERE "workflowId" = ? AND "stepKey" = 'run_1'`,
       [JSON.stringify({ jobId: B.id, inputs: { window: '{window}', region: '{output.region}' }, carry: { n: '{carry.n}' }, callbackUrl: '{resumeUrl}' }), JSON.stringify([{ condition: null, mode: 'single', target: 'end_success' }]), oldId])
@@ -233,8 +234,10 @@ try {
     await engine.db.conn().raw(sql.slice(sql.indexOf('UPDATE "workflow_steps"')))
     const conv = await Workflow.query().findById(oldId)
     const convSteps = await Step.query().where({ workflowId: oldId }).orderBy('position')
-    check('kind workflow, a job trigger, no key', conv.kind === 'workflow' && same(conv.trigger, { kind: 'job', jobId: Y.id, when: 'finished' }) && conv.key === null, conv)
+    check('kind workflow, a job trigger, the jobs screen\'s key', conv.kind === 'workflow' && same(conv.trigger, { kind: 'job', jobId: Y.id, when: 'finished' }) && conv.key === 'after-job-' + Y.id, conv)
     check('decide and job-run steps', convSteps[0].actionName === 'decide' && convSteps[1].actionName === 'job-run')
+    check('each arrow keeps its rule\'s `when`, reading the trigger; the closing one is "otherwise"',
+      same(convSteps[0].transitions[0].when, { field: 'trigger.status', op: '=', value: 'success' }) && convSteps[0].transitions[1].when === null, convSteps[0].transitions)
     check('conditions and bindings read the trigger; "{window}" left to job-run', convSteps[0].transitions[0].condition.left.field === 'trigger.status' &&
       same(convSteps[1].values.inputs, { region: '{trigger.output.region}' }) && convSteps[1].values.carry.n === '{trigger.carry.n}', convSteps.map((s) => [s.transitions, s.values]))
     await Workflow.query().findById(wX.id).patch({ status: 'draft' })
@@ -242,6 +245,27 @@ try {
     await jobs.trigger(Y.id, { inputs: { window: W } })
     const bAfter = await until(() => ran.find((r) => r.job === 'B'))
     check('...and it runs: Y finishing starts B, with Y\'s period', bAfter && same(bAfter.input.window, W), bAfter)
+
+    console.log('\na chain converted before 0015 kept the key and `when` is repaired (migration 0016)')
+    const earlyId = generateId()
+    await Workflow.query().insert({ id: earlyId, name: 'After Job D', kind: 'workflow', status: 'published',
+      description: 'Made from the "After this job" rules of job ' + D.id + '.', trigger: { kind: 'job', jobId: D.id, when: 'finished' } })
+    await Step.query().insert({ id: generateId(), workflowId: earlyId, stepKey: 'decide', name: 'Decide', actionName: 'decide', position: 0, values: {}, transitions: [] })
+    await engine.db.conn().raw(`UPDATE workflow_steps SET transitions = ? WHERE "workflowId" = ?`, [JSON.stringify([
+      { condition: { left: { field: 'trigger.output.totalRows' }, op: 'gt', right: { value: 0 } }, mode: 'single', target: 'run_1' },
+      { condition: { any: [{ left: { field: 'trigger.status' }, op: 'eq', right: { value: 'failed' } }] }, mode: 'single', target: 'run_2' },
+      { condition: null, mode: 'single', target: 'end_success' }
+    ]), earlyId])
+    const sql16 = readFileSync(new URL('../migrations/0016_after_job_shortcut.sql', import.meta.url), 'utf8')
+    await engine.db.conn().raw(sql16)
+    const early = await Workflow.query().findById(earlyId)
+    const earlyArrows = (await Step.query().where({ workflowId: earlyId, stepKey: 'decide' }).first()).transitions
+    check('it gets the jobs screen\'s key', early.key === 'after-job-' + D.id, early.key)
+    check('a single comparison gets its `when` back, in the screen\'s words', same(earlyArrows[0].when, { field: 'trigger.output.totalRows', op: '>', value: 0 }), earlyArrows[0])
+    check('a nested one is left without (the screen says it was changed elsewhere)', earlyArrows[1].when === undefined)
+    check('an empty condition is "otherwise"', earlyArrows[2].when === null)
+    await engine.db.conn().raw(sql16)
+    check('running it again changes nothing', same((await Step.query().where({ workflowId: earlyId, stepKey: 'decide' }).first()).transitions, earlyArrows))
   })
 
   console.log('\nwithout a way to start jobs')
