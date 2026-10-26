@@ -105,6 +105,10 @@ host gives workflow is the boundary.
   first match wins (`@xeplr/expression-handler`); a blank condition is the
   catch-all; targets are a `stepKey`, `end_success` or `end_failed`. No match
   and no catch-all **fails the run**.
+- **Screens hand over to screens**: a flow's run view carries `previous` — what
+  every screen submitted earlier in the run, keyed by screen key, the saved row
+  as `values.id` (`lib/flows.js` `previousOf`). Read-only, built from the step
+  runs; nothing new is stored, and nothing is checked between screens.
 - **Letting a function decide**: a transition `{ decide: 'routeByAmount', targets?: [...] }`
   asks a function the app registered with `@xeplr/actions` under `event: 'decide'`
   where to go. It is called with `{ output, values (= output), params, item, trigger,
