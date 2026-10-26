@@ -32,6 +32,27 @@ check('an arrow with only a condition is left alone', same(t[2], { condition: { 
 const e2 = refusal(() => compileTransitions([{ when: { field: 'x', op: '~' } }], 'Decide'))
 check('a refusal names the step and the arrow', e2 && /^Step "Decide", arrow 1/.test(e2.message), e2 && e2.message)
 
+// Arrows the runner could not follow are refused when the step is saved.
+const arrowBad = [
+  [{ mode: 'each', target: 'b' }, /needs the list to go through \(`source`\)/],
+  [{ mode: 'each', target: 'b', source: 'rows' }, /"rows" is not a list it can read/],
+  [{ mode: 'loop', target: 'b' }, /"loop" is not a kind of arrow/],
+  [{ condition: null }, /say where it goes/],
+  [{ decide: 'route', mode: 'each', source: 'output.rows' }, /either lets a function decide or goes through a list/],
+  [{ decide: 'route', targets: 'b' }, /`targets` is a list of step keys/],
+  ['b', /an arrow must be an object/]
+]
+arrowBad.forEach(([a, msg]) => {
+  const e = refusal(() => compileTransitions([{ target: 'ok' }, a], 'Match'))
+  check('arrow refused: ' + JSON.stringify(a), e && msg.test(e.message) && /^Step "Match", arrow 2/.test(e.message) && e.name === 'ValidationError' && e.code === 'TRANSITION_INVALID', e && e.message)
+})
+const arrowsOk = [
+  { target: 'b' }, { target: 'end_success', mode: 'single' },
+  { mode: 'each', target: 'b', source: 'output.rows' }, { mode: 'each', target: 'b', source: 'item.lines' },
+  { decide: 'route' }, { decide: 'route', targets: ['b', 'end_failed'] }
+]
+check('arrows the runner follows are accepted', refusal(() => compileTransitions(arrowsOk, 'Match')) === null)
+
 const failed = results.filter((c) => !c).length
 console.log(`\n${results.length - failed}/${results.length} passed`)
 process.exit(failed ? 1 : 0)

@@ -117,7 +117,8 @@ host gives workflow is the boundary.
   function, one written for another event, no answer, or an answer outside
   `targets` **fails the run**, naming the function. Functions registered with an
   `event` are screen functions, never steps: the action catalog leaves them out.
-- **Fan-out**: a matching `each` transition creates one child run per matching
+- **Fan-out**: a matching `each` transition goes through the list its `source`
+  names (`output.rows`, `item.lines`, `params.…`, `trigger.…`) and creates one child run per matching
   element (`item`), recorded in `workflow_run_edges`. With `joinStep` the parent
   waits and resumes at the join once all children are terminal (guarded by an
   atomic `waiting → running` patch); without it the parent finishes.
@@ -166,7 +167,9 @@ The same rules hold for every kind:
 - A trigger seen for the first time, or whose settings changed, is given its next due time and does **not** fire, so publishing never starts a run for a time already past.
 - A due trigger is **claimed** by a conditional update of its due time, so two processes running the tick start it once.
 
-**A host's own kinds.** `registerTrigger(kind, { validate, due?, matches? })`:
+**What a designer offers.** `triggers.catalog()` lists every kind as `{ kind, label, description, fields }`, where `fields` are the form's boxes (`{ name, label, placeholder?, help?, required?, options? }`). The API serves it at `GET /workflow/triggers`. A designer builds its trigger form from it, so it never offers a kind this engine refuses (one once offered "A file arrives", which no engine had).
+
+**A host's own kinds.** `registerTrigger(kind, { label?, description?, fields?, validate, due?, matches? })`:
 - a time kind gives `due(trigger, from)`, its next due `Date`;
 - an event kind gives `matches(trigger, event)`, and the host calls `triggers.emit(kind, event)` when the event happens.
 
@@ -183,6 +186,14 @@ An arrow (a transition) can carry `when` instead of an engine `condition`. The e
 The comparisons are the flows facade's: `=`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `notContains`, `startsWith`, `endsWith`, `in`, `notIn`, `between`, `isEmpty`, `isNotEmpty`.
 
 A bad `when` is refused when it is saved, naming the step and the arrow. That is how a screen of your own (and the jobs screen's "After this job") writes branches without knowing the node format.
+
+**An arrow the runner could not follow is refused when it is saved** (`checkArrow`, code `TRANSITION_INVALID`, naming the step and arrow):
+- `mode` is `single` (the default) or `each`;
+- an arrow needs a `target` (a step key, `end_success` or `end_failed`), unless it names a `decide` function;
+- an `each` arrow needs `source`, the list it goes through, starting with `output`, `item`, `params` or `trigger`;
+- an arrow either decides or goes through a list, not both, and `targets` is a list of step keys.
+
+Why: each of these used to save, and then the live run ended with "No transition matched". A designer once saved every `each` arrow without its `source`, so nothing ever fanned out.
 
 ## Jobs as steps and as triggers (`lib/jobs.js`)
 
