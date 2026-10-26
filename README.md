@@ -105,6 +105,14 @@ host gives workflow is the boundary.
   first match wins (`@xeplr/expression-handler`); a blank condition is the
   catch-all; targets are a `stepKey`, `end_success` or `end_failed`. No match
   and no catch-all **fails the run**.
+- **Letting a function decide**: a transition `{ decide: 'routeByAmount', targets?: [...] }`
+  asks a function the app registered with `@xeplr/actions` under `event: 'decide'`
+  where to go. It is called with `{ output, values (= output), params, item, trigger,
+  step, runId, targets }` and returns a step key, `end_success` or `end_failed`;
+  `targets`, when listed, are the steps it may choose (none: any step). A missing
+  function, one written for another event, no answer, or an answer outside
+  `targets` **fails the run**, naming the function. Functions registered with an
+  `event` are screen functions, never steps: the action catalog leaves them out.
 - **Fan-out**: a matching `each` transition creates one child run per matching
   element (`item`), recorded in `workflow_run_edges`. With `joinStep` the parent
   waits and resumes at the join once all children are terminal (guarded by an

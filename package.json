@@ -2,7 +2,7 @@
   "name": "@xeplr/workflow-engine",
   "version": "3.0.3",
   "license": "MIT",
-  "description": "The free workflow engine: runs, actions as steps, branching, waits, and triggers — manual, API, a schedule, a job finishing. No HTTP: @xeplr/workflow-api puts the routes on top.",
+  "description": "The free workflow engine: runs, actions as steps, branching, waits, and triggers \u2014 manual, API, a schedule, a job finishing. No HTTP: @xeplr/workflow-api puts the routes on top.",
   "keywords": [
     "workflow",
     "orchestration",
@@ -31,7 +31,7 @@
     "url": "https://github.com/Xeplr/xeplr-workflow-engine.git"
   },
   "peerDependencies": {
-    "@xeplr/actions": "^1.1.0",
+    "@xeplr/actions": "^1.4.0",
     "@xeplr/auth": "^1.0.0",
     "@xeplr/db": "^1.0.0",
     "@xeplr/expression-handler": "^2.0.0",

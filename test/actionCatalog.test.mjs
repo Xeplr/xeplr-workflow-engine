@@ -101,6 +101,16 @@ console.log('\nwhat the UI is handed')
   check('and none of them carries its executor', rows.every((r) => r.execute === undefined))
 }
 
+console.log('\na screen function is not a step')
+{
+  actions.register({ name: 'checkSalaryBand', event: 'beforeSave', execute: (ctx) => ctx.values })
+  actions.register({ name: 'routeByAmount', event: 'decide', execute: () => 'review' })
+  const names = catalog.catalog().map((r) => r.name)
+  check('a beforeSave function is not offered as a step', !names.includes('checkSalaryBand'))
+  check('nor a decide function', !names.includes('routeByAmount'))
+  check('...though both are registered, for screens and arrows to pick by name', actions.has('checkSalaryBand') && actions.has('routeByAmount'))
+}
+
 const failed = results.filter(([, ok]) => !ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
 process.exit(failed.length ? 1 : 0)
