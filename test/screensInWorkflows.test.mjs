@@ -69,7 +69,7 @@ try {
     check('Sales does not', (await flows.listWaiting({ user: SALES })).length === 0)
     check('a Super Admin does', (await flows.listWaiting({ user: ADMIN })).length === 1)
     const view = await flows.getRun(run.id)
-    check('the screen opens with the rows the workflow handed it, and its buttons', Array.isArray(view.given.lines) && view.given.lines.length === 2 && view.buttons.length === 2 && view.assignTo === 'Accounts', view)
+    check('the screen opens with the rows the workflow handed it, and its buttons', Array.isArray(view.given.lines) && view.given.lines.length === 2 && view.buttons.length === 2 && view.assignTo === 'Accounts' && view.stepName === 'Review the unmatched', view)
 
     console.log('\nanswering it')
     const notYours = await refusal(flows.submitRun(run.id, { values: {}, action: 'approve' }, { user: SALES }))
