@@ -111,6 +111,8 @@ console.log('\na screen function is not a step')
   check('...though both are registered, for screens and arrows to pick by name', actions.has('checkSalaryBand') && actions.has('routeByAmount'))
 }
 
+check('an API call is offered', require('@xeplr/actions').has('http-request'))
+
 const failed = results.filter(([, ok]) => !ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
 process.exit(failed.length ? 1 : 0)

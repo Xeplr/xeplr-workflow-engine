@@ -110,6 +110,29 @@ try {
     check('a connection that is gone fails the step, saying so', gstep.status === 'failed' && grun.status === 'failed' && gstep.error.code === 'CONNECTION_NOT_FOUND' && /"deleted-one"/.test(gstep.error.message), gstep.error)
     engine.runner.setConnectionResolver(null)
 
+    console.log('\nan API called through a saved connection')
+    const http = require('node:http')
+    const api = http.createServer((req, res) => {
+      const ok = req.headers.authorization === 'Bearer api-secret'
+      res.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(ok ? { rows: [{ ref: 'B1', amount: 75 }], asked: req.url } : { error: 'no' }))
+    })
+    await new Promise((r) => api.listen(0, r))
+    engine.runner.setConnectionResolver(async (id) => id === 'bank-api'
+      ? { baseUrl: 'http://127.0.0.1:' + api.address().port + '/v2', auth: { type: 'bearer', token: 'api-secret' } } : null)
+    const call = await workflow('API call', [
+      { stepKey: 'call', name: 'Statements', actionName: 'http-request', values: {
+        connectionInfoId: 'bank-api', path: '/statements', query: { month: '2026-09' } } },
+      { stepKey: 'keep', name: 'Keep', actionName: 'data-operation', values: { from: '{steps.call.output.body.rows}' } }
+    ])
+    const cr = await engine.runner.startRun(call.id, {})
+    const callSteps = await StepRun.query().where({ runId: cr.id }).orderBy('position')
+    check('the step called the API, signed in from the saved connection', callSteps[0].status === 'success' && callSteps[0].output.body.asked === '/v2/statements?month=2026-09', callSteps[0].output || callSteps[0].error)
+    check('...its rows went on as a list', callSteps[1] && callSteps[1].output.count === 1, callSteps[1] && callSteps[1].output)
+    check('...and the token is nowhere in what the run recorded', !JSON.stringify(callSteps.map((x) => x.input)).includes('api-secret'))
+    api.close()
+    engine.runner.setConnectionResolver(null)
+
     console.log('\na template the engine cannot fill')
     const bad = await workflow('Bad date', [
       { stepKey: 'fetch', name: 'Fetch', actionName: 'wf-typed-rows', values: {} },
