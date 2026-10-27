@@ -6,6 +6,9 @@
 // again.
 //
 // Needs WORKFLOW_TEST_PG = '{"host":"localhost","port":5432,"user":"…","password":"…"}'.
+// In India's timezone on purpose: a plain timestamp read back on a non-UTC
+// server moves by the offset, and CI runs in UTC, where that never shows.
+process.env.TZ = 'Asia/Kolkata'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
@@ -92,6 +95,8 @@ try {
     check('...and the host was told of both', told.filter((t) => t.event === 'created' && open1.some((o) => o.id === t.taskId)).length === 2)
     const inboxMeera = await tasks.listMine(MEERA)
     check('...with the period its case is for (none, started by hand)', inboxMeera.tasks[0].period === null)
+    const since = Date.now() - new Date(inboxMeera.tasks[0].since).getTime()
+    check('...and when it opened, as an instant: moments ago, whatever the server\'s timezone', since >= 0 && since < 60000, inboxMeera.tasks[0].since)
     check('Meera\'s inbox has hers, titled, with Approve and Reject',
       inboxMeera.total === 1 && inboxMeera.tasks[0].title === 'Deviation on PO 450103 / 10' && inboxMeera.tasks[0].buttons.map((b) => b.key).join() === 'approved,rejected', inboxMeera)
     check('a Viewer\'s inbox is empty', (await tasks.listMine(NOBODY)).total === 0)
