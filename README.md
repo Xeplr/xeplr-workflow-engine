@@ -202,7 +202,8 @@ per approver). Machine waits — an email link, a job — stay key-only.
   and leave every inbox; answering one says `TASK_CLOSED`.
 - **The inbox** (`listMine`): open and claimed tasks for the user, their roles,
   or anyone; due first, then oldest; paged (`limit` ≤ 200, `offset`, `total`).
-  Each carries its screen and buttons, or Approve/Reject.
+  Each carries its screen and buttons, or Approve/Reject, and the case's
+  `period` when what started it had one.
 - **Overdue**: past `dueAt` the host is told once (`onTask('due')`); with
   `escalateTo` the task moves to that role (`'escalated'`), recorded in its
   `history`.
