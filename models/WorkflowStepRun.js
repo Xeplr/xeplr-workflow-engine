@@ -14,6 +14,8 @@ class WorkflowStepRun extends BaseModel {
         stepId: { type: ['string', 'null'], maxLength: 25 },
         stepKey: { type: ['string', 'null'], maxLength: 64 },
         pathId: { type: ['string', 'null'], maxLength: 25 },
+        // Who answered it, for a waiting step a person resumed (0021).
+        actorUserId: { type: ['string', 'null'], maxLength: 25 },
         actionName: { type: ['string', 'null'], maxLength: 128 },
         status: { type: 'string', enum: ['pending', 'running', 'waiting', 'success', 'failed', 'skipped', 'interrupted'] },
         input: { type: ['object', 'null'] },

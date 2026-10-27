@@ -10,6 +10,7 @@ var jobs = require('./lib/jobs');
 var triggers = require('./lib/triggers');
 var recovery = require('./lib/recovery');
 var versions = require('./lib/versions');
+var tasks = require('./lib/tasks');
 var xcfgSetup = require('./db/xcfgSetup');
 
 // THE WORKFLOW ENGINE — everything that runs a workflow, with no HTTP in it:
@@ -58,6 +59,10 @@ var TENANT_MIGRATIONS_DIR = path.join(__dirname, 'migrations-tenants');
  *   mid-step and fails waits past their timeoutMs. Several processes may run
  *   it; a run is taken by one.
  * @param {number} [config.recoverIntervalMs=30000] - how often it looks.
+ * @param {Function} [config.onTask] - (event, task) → void: told when a task
+ *   opens ('created'), passes its dueAt ('due'), is escalated ('escalated') or
+ *   reassigned ('reassigned'), so the host can notify people. The engine knows
+ *   a role's name, not its members' addresses.
  * @param {object} [config.lease] - { leaseMs, renewMs }: how long a process
  *   holds a run it is moving (default 2 min, renewed every 30 s). A run is
  *   recovered only after its lease has passed, so this is also how long a
@@ -208,6 +213,7 @@ async function startEngine(config) {
   // Runs whose process died, and waits past their time, are found from here
   // on. Also a timer that does not keep the process alive.
   if (config.lease) workflowRunner.setLeaseTiming(config.lease);
+  if (config.onTask !== undefined) tasks.setTaskHook(config.onTask);
   if (config.recover !== false) recovery.startSweeping(config.recoverIntervalMs);
 }
 
@@ -328,6 +334,8 @@ module.exports = {
   conditions: require('./lib/conditions'),
   // The sweeper (sweep() runs one pass now) and the steps a run reads.
   recovery: recovery,
+  // What people answer: the inbox, claim, answer, reassign (lib/tasks.js).
+  tasks: tasks,
   versions: versions,
   xcfgSetup: xcfgSetup,
   auth: require('./lib/auth')
