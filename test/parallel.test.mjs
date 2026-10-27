@@ -260,6 +260,11 @@ try {
     check('...or leaving "sometimes"', e4 && /not a way to leave a step/.test(e4.message), e4 && e4.message)
     const ok = await Step.query().insert({ id: generateId(), workflowId: signOff.id, stepKey: 'fine', actionName: 'pp-note', position: 98, join: { wait: { atLeast: 2 }, stopWhen: rejected } })
     check('a good one is saved with its stop condition compiled', ok.join.stopCondition && ok.join.stopCondition.left.field === 'arrivals.rejected', ok.join)
+    const node = { left: { field: 'arrivals.rejected' }, op: 'gte', right: { value: 1 } }
+    const asNode = await Step.query().insert({ id: generateId(), workflowId: signOff.id, stepKey: 'fine2', actionName: 'pp-note', position: 97, join: { wait: 'all', stopCondition: node } })
+    check('...and one already compiled, as a designer saves it, is kept', JSON.stringify(asNode.join.stopCondition) === JSON.stringify(node), asNode.join)
+    const e5 = await refused({ join: { wait: 'all', stopCondition: 'arrivals.rejected >= 1' } })
+    check('...but text where the condition goes is refused', e5 && /`stopCondition` is a condition/.test(e5.message), e5 && e5.message)
 
     console.log('\na list for each item while on parallel paths')
     const eachInside = await workflow('Each inside', [

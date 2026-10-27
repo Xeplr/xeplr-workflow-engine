@@ -228,7 +228,7 @@ the same deviation — and move on when enough of them have answered.
     the split actually opened and that can still arrive. A path that ends
     elsewhere (`end_success`) is not waited for; `atLeast` that can no longer be
     reached fails the run (`JOIN_IMPOSSIBLE`) instead of waiting forever.
-  - `stopWhen`: a `when` on `arrivals` — `{ field: 'arrivals.rejected', op: '>=', value: 1 }` — runs it early.
+  - `stopWhen`: a `when` on `arrivals` — `{ field: 'arrivals.rejected', op: '>=', value: 1 }` — runs it early. Compiled into `stopCondition` on save; a designer that compiles its own formulas (as it does an arrow's condition) may save `stopCondition` directly, and it is kept.
   - `others`: `cancel` (default) withdraws the paths still open (their waits
     become `skipped` with `WITHDRAWN`, their links stop working); `finish` lets
     them finish, and their arrival is recorded as `late` and moves nothing.
