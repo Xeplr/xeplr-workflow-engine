@@ -18,6 +18,7 @@ var WorkflowRunPath = require('./WorkflowRunPath');
 var WorkflowVersion = require('./WorkflowVersion');
 var WorkflowRunSplit = require('./WorkflowRunSplit');
 var WorkflowRunArrival = require('./WorkflowRunArrival');
+var WorkflowTask = require('./WorkflowTask');
 
 module.exports = {
   Company: Company,
@@ -33,5 +34,6 @@ module.exports = {
   WorkflowRunPath: WorkflowRunPath,
   WorkflowVersion: WorkflowVersion,
   WorkflowRunSplit: WorkflowRunSplit,
-  WorkflowRunArrival: WorkflowRunArrival
+  WorkflowRunArrival: WorkflowRunArrival,
+  WorkflowTask: WorkflowTask
 };

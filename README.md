@@ -28,13 +28,14 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 
 | Export | Purpose |
 |---|---|
-| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
+| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `onTask` (`(event, task)`: told when a task opens, falls due, is escalated or reassigned, so the host notifies people), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
 | `resumeByKey(key, output?, opts?)` | Server-side, in-process resume of a run parked on a `wait` step. `opts.status: 'failed'` resolves the step as failed. Throws `err.code` `RESUME_KEY_INVALID` (used/unknown, normal for host routes) or `RESUME_KEY_NOT_READY` (step still running; nothing consumed, retry) |
 | `embedRequiredEnv` | `['DB_WORKFLOW']`, spread into a host's `env.required.js` |
 | `callbackRequiredEnv` | `['WORKFLOW_PUBLIC_URL']`, only for hosts using steps that call out (`job-run`) |
 | `MIGRATIONS_DIR`, `TENANT_MIGRATIONS_DIR` | Where the SQL is, for the standalone server and for a bundle that ships the folders |
 | `db` | `connectDb`, with `.model(name)` bound to workflow's own connection |
-| `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey`, `resolveParams`, `collectParams` |
+| `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey` (`opts.actor`: who answered), `resolveParams`, `collectParams`; admin `cancelRun(runId, { reason, actor })`, `retryRun(runId, { reason, actor })` |
+| `tasks` | `lib/tasks.js`: `listMine(user, { limit, offset })`, `claim`, `release`, `answer(id, body, user)`, `reassign(id, { userId \| role }, { reason, actor })`, `sweepDue` ([Tasks](#tasks-and-approvals)) |
 | `recovery` | `lib/recovery.js`: the sweeper — `sweep()` runs one pass now; `startSweeping`, `stopSweeping` |
 | `versions` | `lib/versions.js`: `stepsForRun(run)` (the steps a run reads), `pinVersion(workflowId, steps)` |
 | `flows` | `lib/flows.js`: the flows facade (list, create, put, publish, start, submit, runs) and `touchesScreens` |
@@ -53,13 +54,14 @@ engine/
 ├─ lib/
 │  ├─ workflowRunner.js     startRun, resumeByKey, resolveParams, collectParams, recoverRun
 │  ├─ versions.js           the steps a run reads: pinned when it starts
-│  ├─ recovery.js           the sweeper: runs whose process died, waits past their time
+│  ├─ recovery.js           the sweeper: runs whose process died, waits past their time, overdue tasks
+│  ├─ tasks.js              what people answer: inbox, claim, answer, approvals, reassign
 │  ├─ flows.js              the flows facade: screens as steps
 │  ├─ triggers.js           what starts a workflow: manual, api, schedule, job, and more
 │  ├─ jobs.js               jobs as steps (job-run) and as triggers (jobFinished)
 │  ├─ conditions.js         an arrow's `when` compiled into its condition
 │  ├─ actionCatalog.js      whitelist of @xeplr/actions built-ins + local actions (data-operation and export-table included)
-│  ├─ actions/              local actions: job-run, decide, remember, recall, screen-show
+│  ├─ actions/              local actions: job-run, decide, remember, recall, screen-show, approval
 │  ├─ envExposed.js         WORKFLOW_ENV_EXPOSED allowlist for {env.*}
 │  └─ db.js                 connectDb + model(name) bound to workflow's own connection
 ├─ db/xcfgSetup.js          shared @xeplr/actions attachConfig({ service: 'xeplr-workflow' })
@@ -99,6 +101,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0021` | **Tasks.** `workflow_tasks` (a wait a person answers: assignee user or role, claim, decision, due/escalation, history); `workflow_step_runs.actorUserId` (who answered) |
 | `0020` | **Splits and meeting points.** `workflow_steps.leave`, `workflow_steps.join`; `workflow_run_splits` (a step that opened paths, each time it ran: `opened`, `joinedAt`); `workflow_run_arrivals` (a path reaching a meeting point with its `decision` and `output`, `late` once met); `workflow_run_paths.fromSplitId` |
 | `0019` | **Paths, versions, leases, expiring waits.** `workflow_run_paths` (where a run is — one per run for now); `workflow_versions` (the steps a run started with); `workflow_runs.versionId`, `workflow_runs.lockedUntil`; `workflow_step_runs.pathId`; `workflow_resume_keys.pathId`, `expiresAt`. Gives every unfinished run its path at upgrade |
 
@@ -166,6 +169,48 @@ host gives workflow is the boundary.
 
 Not read by the runner: `workflows.status`, `workflows.kind`,
 `workflow_steps.layout`, `workflow_steps.sampleOutput`.
+
+## Tasks and approvals
+
+A wait that a **person** answers is a task (`workflow_tasks`): a screen
+(`screen-show`, one task for its `assignTo` role) or an **approval** (one task
+per approver). Machine waits — an email link, a job — stay key-only.
+
+- **The `approval` step** (a `wait` step): `approvers` — roles
+  (`"QA Head, Production Head"`) or people (`"user:<id>"`); `need` — `all`
+  (default), `any`, or a number; `order` — `together` (default) or `inTurn`
+  (the next approver's task opens when the one before approves); `onReject` —
+  `stop` (default, the first reject decides) or `collect`; `title`; `notSame`;
+  `dueInHours`, `escalateTo`. Its output, for its arrows and for a meeting
+  point after it: `{ decision: 'approved'|'rejected', approved, rejected,
+  answers: [{ by, role, decision, comment, at }] }`. It is the meeting point's
+  rule counted over tasks: one box to draw, not a split to wire. Needing more
+  approvals than people asked fails the step, saying so.
+- **Who may act**: the user on the request (`{ id, roles }`) — a task for a
+  user is theirs, for a role anyone's holding it, for neither anyone's in the
+  company; a Super Admin any. A claimed task is the claimer's alone
+  (`TASK_CLAIMED`). The engine never reads auth tables.
+- **Four eyes**: the person who started the case never approves it; nor does
+  anyone who acted at the steps `notSame` names; nor does one person answer the
+  same approval twice (`NOT_SAME_PERSON`, `ALREADY_ANSWERED`). A reject needs a
+  reason (`REASON_REQUIRED`).
+- **Who answered** is recorded: `workflow_step_runs.actorUserId`, and the task's
+  `decidedBy`, `decision`, `comment`. A screen submitted through
+  `flows.submitRun` closes its task the same way.
+- **Withdrawn**: when an approval or a meeting point goes ahead without a task,
+  when a wait expires, or when the case ends, its open tasks become `withdrawn`
+  and leave every inbox; answering one says `TASK_CLOSED`.
+- **The inbox** (`listMine`): open and claimed tasks for the user, their roles,
+  or anyone; due first, then oldest; paged (`limit` ≤ 200, `offset`, `total`).
+  Each carries its screen and buttons, or Approve/Reject.
+- **Overdue**: past `dueAt` the host is told once (`onTask('due')`); with
+  `escalateTo` the task moves to that role (`'escalated'`), recorded in its
+  `history`.
+- **Admin** (needs a reason, kept with who gave it): `tasks.reassign` to a user or
+  role; `runner.cancelRun` (the case fails as `CANCELLED`, its tasks withdrawn);
+  `runner.retryRun` — runs the step a crash interrupted once a person has
+  checked it did not already do its work (one-path cases; a case on several
+  paths is started again).
 
 ## Parallel paths and meeting points
 
@@ -383,6 +428,7 @@ No database or network needed, except the suites marked "On a real Postgres" and
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |
 | `paths.test.mjs` | `MIGRATIONS_DIR` and `TENANT_MIGRATIONS_DIR` exist inside the package, hold SQL, and are listed in `readsFromDisk` (an undefined one makes the migrator run the HOST's `./migrations` against workflow's database) |
 | `runParams.test.mjs` | `resolveParams` / `collectParams`: required, defaults, types, typos, union rules |
+| `tasks.test.mjs` | On a real Postgres: an approval by two roles, each seeing only theirs, deciding once both approve and recording who; a reject needing a reason, deciding at once and withdrawing the other; four eyes (requester, `notSame`, one person twice); any one, at least 2, more than asked refused, in turn; claim, refusal to another, release; a screen as a task, by its role, through either route; overdue telling the host once and escalating with history; reassign and cancel needing reasons; retry of an interrupted case; approvals on parallel paths feeding a meeting point; an expired wait withdrawing; the inbox paging |
 | `parallel.test.mjs` | On a real Postgres: a split opening a path per arrow and the case waiting on both; one answer not enough, two moving it once, with every answer readable; **two answers in the same instant running the meeting point once**; a reject going back at once, the other approver withdrawn and their link dead; any one of three; at least 2 of 3 with the third finishing late; a false arrow opening nothing to wait for; an unreachable `atLeast` failing; a path not reading a parallel path's steps; arrows reading earlier steps; going back counting afresh; `end_run`, `end_failed`, `end_success` from one path; what cannot be saved; `each` on parallel paths refused; two screens waiting and a submit naming which; a crash with two paths; a plain workflow unchanged |
 | `recovery.test.mjs` | On a real Postgres: every run records its path, and its step runs and keys name it; a run waiting while its design was saved over (new step ids) is answered and goes on as it started, a later run reads the new design, unchanged steps reuse a version; a wait past `timeoutMs` fails as `TIMED_OUT`, or goes on with `onError: continue`; **a process killed for real mid-step** (`recovery.child.mjs`, `SIGKILL`): left alone while its lease holds, then a step that may have had an effect stopped as `INTERRUPTED` and not repeated, a step safe to run again run again; a run that died before its first step started, one that died between steps going on without repeating one; a run waiting from before 0019 given its path by the migration and answered |
 
