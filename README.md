@@ -28,18 +28,20 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 
 | Export | Purpose |
 |---|---|
-| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000) |
+| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
 | `resumeByKey(key, output?, opts?)` | Server-side, in-process resume of a run parked on a `wait` step. `opts.status: 'failed'` resolves the step as failed. Throws `err.code` `RESUME_KEY_INVALID` (used/unknown, normal for host routes) or `RESUME_KEY_NOT_READY` (step still running; nothing consumed, retry) |
 | `embedRequiredEnv` | `['DB_WORKFLOW']`, spread into a host's `env.required.js` |
 | `callbackRequiredEnv` | `['WORKFLOW_PUBLIC_URL']`, only for hosts using steps that call out (`job-run`) |
 | `MIGRATIONS_DIR`, `TENANT_MIGRATIONS_DIR` | Where the SQL is, for the standalone server and for a bundle that ships the folders |
 | `db` | `connectDb`, with `.model(name)` bound to workflow's own connection |
 | `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey`, `resolveParams`, `collectParams` |
+| `recovery` | `lib/recovery.js`: the sweeper — `sweep()` runs one pass now; `startSweeping`, `stopSweeping` |
+| `versions` | `lib/versions.js`: `stepsForRun(run)` (the steps a run reads), `pinVersion(workflowId, steps)` |
 | `flows` | `lib/flows.js`: the flows facade (list, create, put, publish, start, submit, runs) and `touchesScreens` |
 | `triggers`, `registerTrigger` | `lib/triggers.js`: what starts a workflow — the registry of kinds, `validate`, `emit`, the schedule `tick`, `describe` ([Triggers](#triggers-libtriggersjs)) |
 | `conditions` | `lib/conditions.js`: `whenToCondition`, `compileTransitions` ([Conditions](#conditions-written-simply-libconditionsjs)) |
 | `jobs`, `jobFinished` | `lib/jobs.js`: jobs as steps and as triggers — `setJobStarter`, `jobFinished` ([Jobs](#jobs-as-steps-and-as-triggers-libjobsjs)) |
-| `actionCatalog`, `envExposed`, `xcfgSetup` | The action whitelist, the `WORKFLOW_ENV_EXPOSED` allowlist, the shared `xeplr_configs` attachment |
+| `actionCatalog`, `envExposed`, `xcfgSetup` | The action whitelist (and `allowRetry(names)`: a host's own actions that are safe to run again after a crash), the `WORKFLOW_ENV_EXPOSED` allowlist, the shared `xeplr_configs` attachment |
 
 The package reads `migrations/` and `migrations-tenants/` from disk (`"xeplr": { "readsFromDisk": [...] }` in `package.json`), so a build that compiles it must ship those folders beside it.
 
@@ -49,7 +51,9 @@ The package reads `migrations/` and `migrations-tenants/` from disk (`"xeplr": {
 engine/
 ├─ index.js                 startEngine, resumeByKey, the env lists, and the parts below
 ├─ lib/
-│  ├─ workflowRunner.js     startRun, resumeByKey, resolveParams, collectParams
+│  ├─ workflowRunner.js     startRun, resumeByKey, resolveParams, collectParams, recoverRun
+│  ├─ versions.js           the steps a run reads: pinned when it starts
+│  ├─ recovery.js           the sweeper: runs whose process died, waits past their time
 │  ├─ flows.js              the flows facade: screens as steps
 │  ├─ triggers.js           what starts a workflow: manual, api, schedule, job, and more
 │  ├─ jobs.js               jobs as steps (job-run) and as triggers (jobFinished)
@@ -61,8 +65,9 @@ engine/
 ├─ db/xcfgSetup.js          shared @xeplr/actions attachConfig({ service: 'xeplr-workflow' })
 ├─ models/                  Company, Workspace, Workflow, WorkflowStep, WorkflowRun,
 │                           WorkflowStepRun, WorkflowResumeKey, WorkflowRunEdge,
-│                           WorkflowTriggerState
-├─ migrations/              0003–0016, workflow's own tables
+│                           WorkflowTriggerState, WorkflowMemory, WorkflowRunPath,
+│                           WorkflowVersion
+├─ migrations/              0003–0019, workflow's own tables
 ├─ migrations-tenants/      0001–0002: standalone workflow's companies / workspaces
 └─ test/                    run.mjs + *.test.mjs
 ```
@@ -92,6 +97,9 @@ Both run against workflow's own database:
 | `0012` | `workflows.kind` (`workflow` \| `jobs`, default `workflow`) |
 | `0013` | `workflows.key` — a stable name a host addresses a flow by, unique per tenant while it is set |
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
+
+| `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0019` | **Paths, versions, leases, expiring waits.** `workflow_run_paths` (where a run is — one per run for now); `workflow_versions` (the steps a run started with); `workflow_runs.versionId`, `workflow_runs.lockedUntil`; `workflow_step_runs.pathId`; `workflow_resume_keys.pathId`, `expiresAt`. Gives every unfinished run its path at upgrade |
 
 Every table carries `mtId1`–`mtId4` and **no `applicationId`**: the database a
 host gives workflow is the boundary.
@@ -150,7 +158,41 @@ host gives workflow is the boundary.
   after the starting request.
 
 Not read by the runner: `workflows.status`, `workflows.kind`,
-`workflow_steps.layout`, `workflow_steps.sampleOutput`, `workflow_steps.timeoutMs`.
+`workflow_steps.layout`, `workflow_steps.sampleOutput`.
+
+## Surviving a crash and a design edit
+
+- **A run reads the steps it started with** (`lib/versions.js`). `startRun` pins a
+  `workflow_versions` row: the first run on a set of steps nobody has run before
+  cuts one (recognised by a hash of what the steps do — moving a box on the canvas
+  is not a new version), later runs on the same steps reuse it. A design saved
+  while a run waits, even one that re-creates every step under new ids as a flow's
+  save does, cannot change or strand it. Fan-out children read their parent's.
+  Runs from before 0019 have no version and keep reading the live steps.
+- **Whoever moves a run holds a lease** (`workflow_runs.lockedUntil`, 2 min,
+  renewed every 30 s while a step works, on a timer that never keeps the process
+  alive). A process that dies stops renewing.
+- **The sweeper** (`lib/recovery.js`, every 30 s; `recover: false` turns it off in
+  a process) takes a `running` run whose lease has passed — one process wins, by
+  an atomic conditional patch — and goes on from what the run last recorded:
+  nothing yet → start it; a step finished but the next was never chosen → choose
+  it (no step is repeated); a step mid-way → **run it again only if it is safe to**
+  (it reads, computes or shows: `actionCatalog.SAFE_TO_RETRY`, plus a host's
+  `allowRetry(names)`), otherwise the step is marked `interrupted` and the run
+  fails with `INTERRUPTED`, naming the step and saying to check it. An email may
+  already be sent or a file uploaded; that is for a person to check, not the
+  engine to guess. Not after a fan-out had started: some children may exist.
+- **A wait expires** after its step's `timeoutMs`: the key carries `expiresAt`,
+  and the sweeper resolves it as failed (`TIMED_OUT`, `output.timedOut: true`)
+  through `resumeByKey`, so `onError` decides — stop (default) or go on.
+- **A resume is one transaction**: the key is spent, the answer recorded and the
+  run taken under a lease, or none of it. A crash between them used to leave a
+  spent key on a run still `waiting`, which could never be answered again.
+- **Where a run is, as a row** (`workflow_run_paths`): the step it is on and
+  whether it is running, waiting or done. One per run for now; parallel paths
+  inside one run are the next change. Step runs and keys carry their `pathId`.
+- Runs still finish inside the call that moves them, as before: `startRun`
+  returns the run as it ended or paused.
 
 ## Triggers (`lib/triggers.js`)
 
@@ -271,7 +313,7 @@ Migration 0016 repairs a database that ran 0015's first release, which left the 
 npm test          # node test/run.mjs — each *.test.mjs in its own process
 ```
 
-No database or network needed, except `triggers.test.mjs`, which runs on a real Postgres when `WORKFLOW_TEST_PG='{"host":…,"port":…,"user":…,"password":…}'` is set (scratch databases, created and dropped) and is skipped otherwise. CI and the release start a throwaway Postgres and set it, so neither ships on a skipped suite. `npm install` first: the peers install with it.
+No database or network needed, except the suites marked "On a real Postgres" and `triggers.test.mjs`, which run on a real Postgres when `WORKFLOW_TEST_PG='{"host":…,"port":…,"user":…,"password":…}'` is set (scratch databases, created and dropped) and is skipped otherwise. CI and the release start a throwaway Postgres and set it, so neither ships on a skipped suite. `npm install` first: the peers install with it.
 
 | Suite | Covers |
 |---|---|
@@ -295,5 +337,6 @@ No database or network needed, except `triggers.test.mjs`, which runs on a real 
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |
 | `paths.test.mjs` | `MIGRATIONS_DIR` and `TENANT_MIGRATIONS_DIR` exist inside the package, hold SQL, and are listed in `readsFromDisk` (an undefined one makes the migrator run the HOST's `./migrations` against workflow's database) |
 | `runParams.test.mjs` | `resolveParams` / `collectParams`: required, defaults, types, typos, union rules |
+| `recovery.test.mjs` | On a real Postgres: every run records its path, and its step runs and keys name it; a run waiting while its design was saved over (new step ids) is answered and goes on as it started, a later run reads the new design, unchanged steps reuse a version; a wait past `timeoutMs` fails as `TIMED_OUT`, or goes on with `onError: continue`; **a process killed for real mid-step** (`recovery.child.mjs`, `SIGKILL`): left alone while its lease holds, then a step that may have had an effect stopped as `INTERRUPTED` and not repeated, a step safe to run again run again; a run that died before its first step started, one that died between steps going on without repeating one; a run waiting from before 0019 given its path by the migration and answered |
 
 The flows facade is tested from `@xeplr/workflow-api` (`test/flows.test.mjs`), through its real router.
