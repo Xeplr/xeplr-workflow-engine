@@ -17,6 +17,7 @@ class WorkflowRunEdge extends BaseModel {
         parentRunId: { type: 'string', maxLength: 25 },
         childRunId: { type: 'string', maxLength: 25 },
         sourceStepKey: { type: ['string', 'null'], maxLength: 64 },
+        targetStepKey: { type: ['string', 'null'], maxLength: 64 },
         itemIndex: { type: ['integer', 'null'] },
         itemKey: { type: ['string', 'null'], maxLength: 255 },
         item: { type: ['object', 'null'] },

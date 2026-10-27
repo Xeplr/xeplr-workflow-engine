@@ -40,7 +40,9 @@ const arrowBad = [
   [{ condition: null }, /say where it goes/],
   [{ decide: 'route', mode: 'each', source: 'output.rows' }, /either lets a function decide or goes through a list/],
   [{ decide: 'route', targets: 'b' }, /`targets` is a list of step keys/],
-  ['b', /an arrow must be an object/]
+  ['b', /an arrow must be an object/],
+  [{ mode: 'each', target: 'b', source: 'output.rows', limit: 0 }, /`limit` is how many items run at once/],
+  [{ mode: 'each', target: 'b', source: 'output.rows', limit: 2.5 }, /`limit` is how many items run at once/]
 ]
 arrowBad.forEach(([a, msg]) => {
   const e = refusal(() => compileTransitions([{ target: 'ok' }, a], 'Match'))
@@ -48,7 +50,7 @@ arrowBad.forEach(([a, msg]) => {
 })
 const arrowsOk = [
   { target: 'b' }, { target: 'end_success', mode: 'single' },
-  { mode: 'each', target: 'b', source: 'output.rows' }, { mode: 'each', target: 'b', source: 'item.lines' },
+  { mode: 'each', target: 'b', source: 'output.rows' }, { mode: 'each', target: 'b', source: 'item.lines', limit: 25 },
   { decide: 'route' }, { decide: 'route', targets: ['b', 'end_failed'] }
 ]
 check('arrows the runner follows are accepted', refusal(() => compileTransitions(arrowsOk, 'Match')) === null)

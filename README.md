@@ -119,11 +119,15 @@ host gives workflow is the boundary.
   function, one written for another event, no answer, or an answer outside
   `targets` **fails the run**, naming the function. Functions registered with an
   `event` are screen functions, never steps: the action catalog leaves them out.
+- **A loop is stopped:** one step may run at most `maxStepRuns` times in one run (the workflow's setting; default 100, migration 0017). Past that the run fails with `LOOP_LIMIT`, saying how to allow more. An arrow back to an earlier step with no wait step on the way used to spin forever.
+- **Going on past a failure follows the arrows** (`onError: 'continue'`): the step's output is `{ failed: true, error: { message, code } }`, the arrows are evaluated on it as on any output (`output.failed = true`), and later steps read it as `{steps.<key>.output.error.message}`. No arrows: the next step by position, as before. It used to go by position even when the step had arrows.
 - **Fan-out**: a matching `each` transition goes through the list its `source`
   names (`output.rows`, `item.lines`, `params.…`, `trigger.…`) and creates one child run per matching
   element (`item`), recorded in `workflow_run_edges`. With `joinStep` the parent
   waits and resumes at the join once all children are terminal (guarded by an
   atomic `waiting → running` patch); without it the parent finishes.
+  - **At most `limit` children run at once** (an arrow setting; default 10). The rest wait as `queued`, and each child that ends starts the next. A list of 500 used to start 500 runs at the same moment.
+  - **Every run that ends tells its parent** (`finishRun` → `afterRunFinished`), however it ended. A child that paused on a wait step and finished on resume used to never tell it, so a parent waiting to join waited forever.
 - **Wait steps**: the resume key row is written **before** the action runs;
   the run parks with status `waiting`. If the action fails the key is marked
   consumed.
@@ -202,6 +206,7 @@ Why: each of these used to save, and then the live run ended with "No transition
 A job meets a workflow in two places, and both are ordinary workflows:
 
 - **As a step:** `job-run` starts a job and parks (a `wait` step) until it reports back. The run carries on with its result.
+  - **A busy job is waited for** (`whenBusy: 'wait'`, the default): a job runs one at a time, so the step tries to start it again every `busyRetrySeconds` (30) for up to `busyWaitMinutes` (10), then fails with `JOB_BUSY` saying how long it tried. `whenBusy: 'fail'` fails at once. It only goes on once the job has started, so nothing runs past a job that did not run. The wait is held in the process: a restart during it ends the step.
 - **As a trigger:** `{ "kind": "job", "jobId": "…", "when": "success" }` starts the workflow when that job finishes.
 
 Branch on how a job ended with a `decide` step: it does nothing itself, and the conditions on its arrows read `{trigger.*}`.
@@ -275,6 +280,7 @@ No database or network needed, except `triggers.test.mjs`, which runs on a real 
 - migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
 - migration 0016 repairing one converted early, and changing nothing on a second run |
 | `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered |
+| `runningSafely.test.mjs` | On a real Postgres: a loop stopped at `maxStepRuns`; a failure routed by its arrows with its error readable; an `each` arrow never past its limit, joining once; children that paused and were resumed still letting the parent join; `job-run` waiting for a busy job, failing at once with `whenBusy: fail`, and giving up after `busyWaitMinutes` |
 | `typedValues.test.mjs` | On a real Postgres: rows from one step filtered by the data step as a list; a period written as a month in a zone; text fields get text, numbers and lists keep their type; a bad template fails the run by step |
 | `envExposed.test.mjs` | Nothing exposed by default; exact, case-sensitive matching; globs fail closed (against real `interpolateAll`) |
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |

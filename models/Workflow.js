@@ -32,6 +32,8 @@ class Workflow extends BaseModel {
         // a host registers. Checked on every write (below), so a trigger that
         // could never fire is refused when it is saved, not discovered later.
         trigger: { type: ['object', 'null'] },
+        // How many times one step may run in one run before it is stopped as a loop (null: 100).
+        maxStepRuns: { type: ['integer', 'null'], minimum: 1 },
         status: { type: 'string', maxLength: 20 },
         // WHAT THE BUILDER OFFERS, not what the engine does — 'workflow' (the
         // action catalogue), 'jobs' (the job list), or 'screens' (a flow,
