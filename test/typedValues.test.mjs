@@ -90,6 +90,26 @@ try {
     check('a number stays a number', got.n === 2, got)
     check('a list stays a list', Array.isArray(got.list) && got.list.length === 2, got)
 
+    console.log('\na saved connection: an id in the step, the login only in the call')
+    engine.runner.setConnectionResolver(async (id) => id === 'pg-main'
+      ? { dbType: 'postgres', connection: { ...PG, database: 'postgres' } } : null)
+    const saved = await workflow('Saved connection', [
+      { stepKey: 'fetch', name: 'Fetch', actionName: 'db-fetch', values: {
+        connectionInfoId: 'pg-main', mode: 'query', sql: "select 'INV-1' as invoice, 48000 as amount", streaming_mode: false } }
+    ])
+    const sr = await engine.runner.startRun(saved.id, {})
+    const fetched = (await StepRun.query().where({ runId: sr.id }))[0]
+    check('the step reads through the saved connection', fetched.status === 'success' && fetched.output.rows[0].invoice === 'INV-1', fetched.output || fetched.error)
+    check('...and what the run recorded holds the id, never the login', fetched.input.connectionInfoId === 'pg-main' && !('connection' in fetched.input) && !JSON.stringify(fetched.input).includes('"user"'), fetched.input)
+    const gone = await workflow('Gone connection', [
+      { stepKey: 'fetch', name: 'Fetch', actionName: 'db-fetch', values: { connectionInfoId: 'deleted-one', mode: 'query', sql: 'select 1', streaming_mode: false } }
+    ])
+    const gr = await engine.runner.startRun(gone.id, {})
+    const gstep = (await StepRun.query().where({ runId: gr.id }))[0]
+    const grun = await engine.db.model('WorkflowRun').query().findById(gr.id)
+    check('a connection that is gone fails the step, saying so', gstep.status === 'failed' && grun.status === 'failed' && gstep.error.code === 'CONNECTION_NOT_FOUND' && /"deleted-one"/.test(gstep.error.message), gstep.error)
+    engine.runner.setConnectionResolver(null)
+
     console.log('\na template the engine cannot fill')
     const bad = await workflow('Bad date', [
       { stepKey: 'fetch', name: 'Fetch', actionName: 'wf-typed-rows', values: {} },

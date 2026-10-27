@@ -41,6 +41,12 @@ var TENANT_MIGRATIONS_DIR = path.join(__dirname, 'migrations-tenants');
  *   callbackUrl }) → { occurrenceId }: how this host starts a job. With
  *   @xeplr/jobs in the same process, `(id, body) => jobs.trigger(id, body)`.
  *   Used by the job-run step; unset, it falls back to its jobsUrl over HTTP.
+ * @param {Function} [config.resolveConnection] - async (connectionInfoId,
+ *   { field, inputs }) → a login, or { dbType, connection }: how this host
+ *   turns a saved connection's id into its login. A step then stores
+ *   `connectionInfoId` and never a password; the login exists only in the
+ *   call to the action (@xeplr/actions' resolveConnections). The same
+ *   function a host gives @xeplr/jobs.
  * @param {boolean} [config.schedule=true] - false: do not run the schedule
  *   tick in this process (lib/triggers.js). Two processes may both run it —
  *   a due trigger is claimed, so it starts once — but one is enough.
@@ -49,6 +55,7 @@ var TENANT_MIGRATIONS_DIR = path.join(__dirname, 'migrations-tenants');
 async function startEngine(config) {
   config = config || {};
   if (config.startJob !== undefined) jobs.setJobStarter(config.startJob);
+  if (config.resolveConnection !== undefined) workflowRunner.setConnectionResolver(config.resolveConnection);
   if (!config.db) {
     throw new Error('startEngine: config.db is required — workflow owns its own domain data regardless of how it is mounted');
   }
