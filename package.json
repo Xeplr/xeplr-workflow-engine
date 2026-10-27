@@ -1,6 +1,6 @@
 {
   "name": "@xeplr/workflow-engine",
-  "version": "3.2.2",
+  "version": "3.2.3",
   "license": "MIT",
   "description": "The free workflow engine: runs, actions as steps, branching, waits, and triggers — manual, API, a schedule, a job finishing. No HTTP: @xeplr/workflow-api puts the routes on top.",
   "keywords": [
