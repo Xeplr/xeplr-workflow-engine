@@ -66,8 +66,8 @@ engine/
 ├─ models/                  Company, Workspace, Workflow, WorkflowStep, WorkflowRun,
 │                           WorkflowStepRun, WorkflowResumeKey, WorkflowRunEdge,
 │                           WorkflowTriggerState, WorkflowMemory, WorkflowRunPath,
-│                           WorkflowVersion
-├─ migrations/              0003–0019, workflow's own tables
+│                           WorkflowVersion, WorkflowRunSplit, WorkflowRunArrival
+├─ migrations/              0003–0020, workflow's own tables
 ├─ migrations-tenants/      0001–0002: standalone workflow's companies / workspaces
 └─ test/                    run.mjs + *.test.mjs
 ```
@@ -99,6 +99,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0020` | **Splits and meeting points.** `workflow_steps.leave`, `workflow_steps.join`; `workflow_run_splits` (a step that opened paths, each time it ran: `opened`, `joinedAt`); `workflow_run_arrivals` (a path reaching a meeting point with its `decision` and `output`, `late` once met); `workflow_run_paths.fromSplitId` |
 | `0019` | **Paths, versions, leases, expiring waits.** `workflow_run_paths` (where a run is — one per run for now); `workflow_versions` (the steps a run started with); `workflow_runs.versionId`, `workflow_runs.lockedUntil`; `workflow_step_runs.pathId`; `workflow_resume_keys.pathId`, `expiresAt`. Gives every unfinished run its path at upgrade |
 
 Every table carries `mtId1`–`mtId4` and **no `applicationId`**: the database a
@@ -113,8 +114,14 @@ host gives workflow is the boundary.
   - **Dates are written as asked:** `{trigger.window.from|date:YYYY-MM:Asia/Kolkata}`. A template that cannot be filled (a pipe on something that is not a date, an unknown zone) **fails the run**, naming the step, instead of running with an empty file name.
 - **Routing**: no `transitions` → next step by `position`. With transitions →
   first match wins (`@xeplr/expression-handler`); a blank condition is the
-  catch-all; targets are a `stepKey`, `end_success` or `end_failed`. No match
-  and no catch-all **fails the run**.
+  catch-all; targets are a `stepKey`, `end_success` (this path is done),
+  `end_failed` (the run fails) or `end_run` (the whole case is done, whatever
+  else is open). No match and no catch-all **fails the run**.
+  - **Arrows read earlier steps**: `steps.<key>.output.*` as well as `output`,
+    `item`, `params`, `trigger` — what a step's values could always read. A
+    path reads its own steps and those before its split, never a parallel
+    path's.
+- **One case on several paths** ([below](#parallel-paths-and-meeting-points)): `leave: 'every'` and `join`.
 - **Screens hand over to screens**: a flow's run view carries `previous` — what
   every screen submitted earlier in the run, keyed by screen key, the saved row
   as `values.id` (`lib/flows.js` `previousOf`). Read-only, built from the step
@@ -160,6 +167,45 @@ host gives workflow is the boundary.
 Not read by the runner: `workflows.status`, `workflows.kind`,
 `workflow_steps.layout`, `workflow_steps.sampleOutput`.
 
+## Parallel paths and meeting points
+
+One case can wait on several things at once — QA and production signing off
+the same deviation — and move on when enough of them have answered.
+
+- **Leaving** (`workflow_steps.leave`): `first` (default, as always) follows the
+  first matching arrow. `every` follows **every** matching arrow, each opening
+  its own path. An arrow whose condition is false opens nothing. A step that
+  leaves by `every` cannot also have an `each` arrow (refused when saved).
+- **Arriving** (`workflow_steps.join`): none (default) — every path that
+  arrives runs the step. A **meeting point** `{ wait, stopWhen?, others? }` runs
+  **once** for the split's paths:
+  - `wait`: `all` (default), `any`, or `{ atLeast: N }` — counted over the paths
+    the split actually opened and that can still arrive. A path that ends
+    elsewhere (`end_success`) is not waited for; `atLeast` that can no longer be
+    reached fails the run (`JOIN_IMPOSSIBLE`) instead of waiting forever.
+  - `stopWhen`: a `when` on `arrivals` — `{ field: 'arrivals.rejected', op: '>=', value: 1 }` — runs it early.
+  - `others`: `cancel` (default) withdraws the paths still open (their waits
+    become `skipped` with `WITHDRAWN`, their links stop working); `finish` lets
+    them finish, and their arrival is recorded as `late` and moves nothing.
+- **`arrivals`**, read by the meeting step's values and arrows: `rows` (one per
+  path: `{ path, from, decision, output }`), `arrived`, `expected`, `approved`,
+  `rejected`. A path's `decision` is its last step's `output.decision`, or a
+  screen's button (`output.action`); `approve…`/`reject…` are counted.
+- **Two answers in the same second** are serialised by a lock on the run row:
+  the meeting point runs exactly once.
+- **Going back** to the split step splits again; the new split counts afresh,
+  and the earlier rounds' arrivals stay in history.
+- **The run** is `waiting` when every open path waits, and finishes when none
+  is open. `end_failed` on any path fails it and ends the others; every live
+  key is spent when a run ends.
+- **Paths run one after another** in the call that moves them; "parallel"
+  means waiting in parallel. An `each` arrow reached while other paths are open
+  fails the run (`EACH_IN_PARALLEL`): put the list before the split or after
+  the meeting point.
+- **Screens**: a case may wait on two at once. The run view's `waitingOn` lists
+  them; `flows.submitRun` takes `stepKey` to say which, and without it refuses
+  with `SAY_WHICH_STEP` when there is more than one.
+
 ## Surviving a crash and a design edit
 
 - **A run reads the steps it started with** (`lib/versions.js`). `startRun` pins a
@@ -188,9 +234,9 @@ Not read by the runner: `workflows.status`, `workflows.kind`,
 - **A resume is one transaction**: the key is spent, the answer recorded and the
   run taken under a lease, or none of it. A crash between them used to leave a
   spent key on a run still `waiting`, which could never be answered again.
-- **Where a run is, as a row** (`workflow_run_paths`): the step it is on and
-  whether it is running, waiting or done. One per run for now; parallel paths
-  inside one run are the next change. Step runs and keys carry their `pathId`.
+- **Where a run is, as rows** (`workflow_run_paths`): each path's step and
+  whether it is running, waiting, arrived or done. Step runs and keys carry
+  their `pathId`. The sweeper picks up each path that was moving on its own.
 - Runs still finish inside the call that moves them, as before: `startRun`
   returns the run as it ended or paused.
 
@@ -337,6 +383,7 @@ No database or network needed, except the suites marked "On a real Postgres" and
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |
 | `paths.test.mjs` | `MIGRATIONS_DIR` and `TENANT_MIGRATIONS_DIR` exist inside the package, hold SQL, and are listed in `readsFromDisk` (an undefined one makes the migrator run the HOST's `./migrations` against workflow's database) |
 | `runParams.test.mjs` | `resolveParams` / `collectParams`: required, defaults, types, typos, union rules |
+| `parallel.test.mjs` | On a real Postgres: a split opening a path per arrow and the case waiting on both; one answer not enough, two moving it once, with every answer readable; **two answers in the same instant running the meeting point once**; a reject going back at once, the other approver withdrawn and their link dead; any one of three; at least 2 of 3 with the third finishing late; a false arrow opening nothing to wait for; an unreachable `atLeast` failing; a path not reading a parallel path's steps; arrows reading earlier steps; going back counting afresh; `end_run`, `end_failed`, `end_success` from one path; what cannot be saved; `each` on parallel paths refused; two screens waiting and a submit naming which; a crash with two paths; a plain workflow unchanged |
 | `recovery.test.mjs` | On a real Postgres: every run records its path, and its step runs and keys name it; a run waiting while its design was saved over (new step ids) is answered and goes on as it started, a later run reads the new design, unchanged steps reuse a version; a wait past `timeoutMs` fails as `TIMED_OUT`, or goes on with `onError: continue`; **a process killed for real mid-step** (`recovery.child.mjs`, `SIGKILL`): left alone while its lease holds, then a step that may have had an effect stopped as `INTERRUPTED` and not repeated, a step safe to run again run again; a run that died before its first step started, one that died between steps going on without repeating one; a run waiting from before 0019 given its path by the migration and answered |
 
 The flows facade is tested from `@xeplr/workflow-api` (`test/flows.test.mjs`), through its real router.

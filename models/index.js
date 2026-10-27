@@ -16,6 +16,8 @@ var WorkflowTriggerState = require('./WorkflowTriggerState');
 var WorkflowMemory = require('./WorkflowMemory');
 var WorkflowRunPath = require('./WorkflowRunPath');
 var WorkflowVersion = require('./WorkflowVersion');
+var WorkflowRunSplit = require('./WorkflowRunSplit');
+var WorkflowRunArrival = require('./WorkflowRunArrival');
 
 module.exports = {
   Company: Company,
@@ -29,5 +31,7 @@ module.exports = {
   WorkflowTriggerState: WorkflowTriggerState,
   WorkflowMemory: WorkflowMemory,
   WorkflowRunPath: WorkflowRunPath,
-  WorkflowVersion: WorkflowVersion
+  WorkflowVersion: WorkflowVersion,
+  WorkflowRunSplit: WorkflowRunSplit,
+  WorkflowRunArrival: WorkflowRunArrival
 };

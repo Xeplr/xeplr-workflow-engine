@@ -21,6 +21,12 @@ class WorkflowStep extends BaseModel {
         // [{ condition: expressionHandlerExpr|null, mode: 'single'|'each', target: stepKey|'end_success'|'end_failed' }]
         transitions: { type: ['array', 'null'] },
         joinStep: { type: ['string', 'null'], maxLength: 64 },
+        // How it leaves: 'first' (null) — the first matching arrow; 'every' —
+        // every matching arrow opens its own path. See migrations/0020.
+        leave: { type: ['string', 'null'], maxLength: 10 },
+        // A meeting point: { wait: 'all'|'any'|{ atLeast: N }, stopWhen?, others? }.
+        // Null: every path that arrives runs the step. lib/conditions.js checks it.
+        join: { type: ['object', 'null'] },
         position: { type: 'integer' },
         // { x, y } canvas pixels — where the builder draws this step. Purely
         // visual; never read by workflowRunner. See migrations/0009.
@@ -58,11 +64,17 @@ class WorkflowStep extends BaseModel {
   }
 
   // An arrow written as `when` ({ field, op, value }) gets its engine
-  // `condition` here, on every write — lib/conditions.js.
+  // `condition` here, on every write — lib/conditions.js. So does a meeting
+  // point's `stopWhen`, and a split or meeting point the runner could not
+  // follow is refused here rather than on the live run.
   compileWhen() {
+    var conditions = require('../lib/conditions');
+    var name = this.name || this.stepKey;
     if (this.transitions !== undefined) {
-      this.transitions = require('../lib/conditions').compileTransitions(this.transitions, this.name || this.stepKey);
+      this.transitions = conditions.compileTransitions(this.transitions, name);
     }
+    if (this.join !== undefined) this.join = conditions.compileJoin(this.join, name);
+    if (this.leave !== undefined || this.transitions !== undefined) conditions.checkLeave(this.leave, this.transitions, name);
   }
 
   static get relationMappings() {
