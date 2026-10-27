@@ -30,6 +30,10 @@ class WorkflowRun extends BaseModel {
         finishedAt: { type: ['string', 'null'] },
         durationMs: { type: ['integer', 'null'] },
         error: { type: ['object', 'null'] },
+        // The steps this run reads (lib/versions.js); null on runs from before versions.
+        versionId: { type: ['string', 'null'], maxLength: 25 },
+        // Held by the process moving the run (lib/recovery.js).
+        lockedUntil: { type: ['string', 'null'] },
         isActive: { type: 'boolean' },
         recordCreatedDate: { type: ['string', 'null'] },
         recordModifiedDate: { type: ['string', 'null'] },

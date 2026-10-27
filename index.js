@@ -8,6 +8,8 @@ var workflowRunner = require('./lib/workflowRunner');
 var flows = require('./lib/flows');
 var jobs = require('./lib/jobs');
 var triggers = require('./lib/triggers');
+var recovery = require('./lib/recovery');
+var versions = require('./lib/versions');
 var xcfgSetup = require('./db/xcfgSetup');
 
 // THE WORKFLOW ENGINE — everything that runs a workflow, with no HTTP in it:
@@ -51,6 +53,15 @@ var TENANT_MIGRATIONS_DIR = path.join(__dirname, 'migrations-tenants');
  *   tick in this process (lib/triggers.js). Two processes may both run it —
  *   a due trigger is claimed, so it starts once — but one is enough.
  * @param {number} [config.scheduleIntervalMs=30000] - how often it looks.
+ * @param {boolean} [config.recover=true] - false: do not run the sweeper in
+ *   this process (lib/recovery.js). It picks up runs whose process died
+ *   mid-step and fails waits past their timeoutMs. Several processes may run
+ *   it; a run is taken by one.
+ * @param {number} [config.recoverIntervalMs=30000] - how often it looks.
+ * @param {object} [config.lease] - { leaseMs, renewMs }: how long a process
+ *   holds a run it is moving (default 2 min, renewed every 30 s). A run is
+ *   recovered only after its lease has passed, so this is also how long a
+ *   crash goes unnoticed.
  */
 async function startEngine(config) {
   config = config || {};
@@ -193,6 +204,11 @@ async function startEngine(config) {
   // Scheduled workflows start themselves from here on. The timer does not
   // keep the process alive.
   if (config.schedule !== false) triggers.startTicking(config.scheduleIntervalMs);
+
+  // Runs whose process died, and waits past their time, are found from here
+  // on. Also a timer that does not keep the process alive.
+  if (config.lease) workflowRunner.setLeaseTiming(config.lease);
+  if (config.recover !== false) recovery.startSweeping(config.recoverIntervalMs);
 }
 
 // Env vars a HOST embedding workflow must supply — spread into the host's
@@ -310,6 +326,9 @@ module.exports = {
   jobFinished: jobs.jobFinished,
   // An arrow's `when` ({ field, op, value }) → the engine's condition node.
   conditions: require('./lib/conditions'),
+  // The sweeper (sweep() runs one pass now) and the steps a run reads.
+  recovery: recovery,
+  versions: versions,
   xcfgSetup: xcfgSetup,
   auth: require('./lib/auth')
 };
