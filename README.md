@@ -55,7 +55,7 @@ engine/
 │  ├─ jobs.js               jobs as steps (job-run) and as triggers (jobFinished)
 │  ├─ conditions.js         an arrow's `when` compiled into its condition
 │  ├─ actionCatalog.js      whitelist of @xeplr/actions built-ins + local actions (data-operation and export-table included)
-│  ├─ actions/              local actions: job-run, decide, screen-show
+│  ├─ actions/              local actions: job-run, decide, remember, recall, screen-show
 │  ├─ envExposed.js         WORKFLOW_ENV_EXPOSED allowlist for {env.*}
 │  └─ db.js                 connectDb + model(name) bound to workflow's own connection
 ├─ db/xcfgSetup.js          shared @xeplr/actions attachConfig({ service: 'xeplr-workflow' })
@@ -120,6 +120,7 @@ host gives workflow is the boundary.
   `targets` **fails the run**, naming the function. Functions registered with an
   `event` are screen functions, never steps: the action catalog leaves them out.
 - **Saved connections:** a step stores `connectionInfoId` (and `sourceConnectionInfoId`, `targetConnectionInfoId`), never a password. Just before the action runs, the host's `resolveConnection` (a `startEngine` setting, the same function a host gives `@xeplr/jobs`) turns it into the login, in the call only (`@xeplr/actions`' `resolveConnections`). The step run's recorded `input` keeps the id. A connection that cannot be resolved fails the step (`CONNECTION_NOT_FOUND`), so `onError` and the arrows apply as to any failure. Before, a step needed the login written into it, and every run copied it into its record.
+- **Memory between runs** (`remember` / `recall`, migration 0018 `workflow_memory`): one value per key per workflow, in the run's tenant. `recall` gives `{ found, value, at, runId }`; `remember` replaces the value (no value: just when), and `forget: true` removes it. A key usually carries the period (`bank-recon:{trigger.window.from|date:YYYY-MM}`), so a workflow starts by asking "is September already done?" and ends by saying it is.
 - **A loop is stopped:** one step may run at most `maxStepRuns` times in one run (the workflow's setting; default 100, migration 0017). Past that the run fails with `LOOP_LIMIT`, saying how to allow more. An arrow back to an earlier step with no wait step on the way used to spin forever.
 - **Going on past a failure follows the arrows** (`onError: 'continue'`): the step's output is `{ failed: true, error: { message, code } }`, the arrows are evaluated on it as on any output (`output.failed = true`), and later steps read it as `{steps.<key>.output.error.message}`. No arrows: the next step by position, as before. It used to go by position even when the step had arrows.
 - **Fan-out**: a matching `each` transition goes through the list its `source`
@@ -173,6 +174,10 @@ The same rules hold for every kind:
 **The schedule tick.** `startEngine` runs it every 30 s, on a timer that does not keep the process alive (`schedule: false` turns it off in a process). It reads every tenant's timed triggers and starts each run in its own workflow's tenant context.
 - A trigger seen for the first time, or whose settings changed, is given its next due time and does **not** fire, so publishing never starts a run for a time already past.
 - A due trigger is **claimed** by a conditional update of its due time, so two processes running the tick start it once.
+
+**A run for a period.** A schedule can say `period`: `previous-day`, `previous-month`, `previous-quarter`, `previous-year` or `current-month`. The run then has `{trigger.window.from}` (included) and `{trigger.window.to}` (not included), the shape a job hands on, worked out at midnight in the trigger's `timezone` (else the server's). The 1st of October in India gives September: `2026-08-31T18:30Z` to `2026-09-30T18:30Z`.
+
+**A trigger gives the run its inputs** (`params`, any kind): each value a template over what fired it, e.g. `{ "month": "{trigger.window.from|date:YYYY-MM:Asia/Kolkata}" }`. Why: a run a trigger started had no inputs, so a workflow with a required one was refused every time it fired.
 
 **What a designer offers.** `triggers.catalog()` lists every kind as `{ kind, label, description, fields }`, where `fields` are the form's boxes (`{ name, label, placeholder?, help?, required?, options? }`). The API serves it at `GET /workflow/triggers`. A designer builds its trigger form from it, so it never offers a kind this engine refuses (one once offered "A file arrives", which no engine had).
 
@@ -282,6 +287,7 @@ No database or network needed, except `triggers.test.mjs`, which runs on a real 
 - migration 0016 repairing one converted early, and changing nothing on a second run |
 | `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered |
 | `runningSafely.test.mjs` | On a real Postgres: a loop stopped at `maxStepRuns`; a failure routed by its arrows with its error readable; an `each` arrow never past its limit, joining once; children that paused and were resumed still letting the parent join; `job-run` waiting for a busy job, failing at once with `whenBusy: fail`, and giving up after `busyWaitMinutes` |
+| `periodsAndMemory.test.mjs` | On a real Postgres: a monthly schedule firing on the 1st with September's window in India and its required input filled from it; `recall`/`remember` making a second run for the same month do nothing and a new month run; memory per workflow and per company; `forget` |
 | `typedValues.test.mjs` | On a real Postgres: a db-fetch through a saved connection, its id recorded and never the login, and a deleted connection failing the step; rows from one step filtered by the data step as a list; a period written as a month in a zone; text fields get text, numbers and lists keep their type; a bad template fails the run by step |
 | `envExposed.test.mjs` | Nothing exposed by default; exact, case-sensitive matching; globs fail closed (against real `interpolateAll`) |
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |

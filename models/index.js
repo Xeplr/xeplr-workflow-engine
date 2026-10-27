@@ -13,6 +13,7 @@ var WorkflowStepRun = require('./WorkflowStepRun');
 var WorkflowResumeKey = require('./WorkflowResumeKey');
 var WorkflowRunEdge = require('./WorkflowRunEdge');
 var WorkflowTriggerState = require('./WorkflowTriggerState');
+var WorkflowMemory = require('./WorkflowMemory');
 
 module.exports = {
   Company: Company,
@@ -23,5 +24,6 @@ module.exports = {
   WorkflowStepRun: WorkflowStepRun,
   WorkflowResumeKey: WorkflowResumeKey,
   WorkflowRunEdge: WorkflowRunEdge,
-  WorkflowTriggerState: WorkflowTriggerState
+  WorkflowTriggerState: WorkflowTriggerState,
+  WorkflowMemory: WorkflowMemory
 };

@@ -31,7 +31,7 @@
     "url": "https://github.com/Xeplr/xeplr-workflow-engine.git"
   },
   "peerDependencies": {
-    "@xeplr/actions": "^1.4.6",
+    "@xeplr/actions": "^1.4.7",
     "@xeplr/auth": "^1.0.0",
     "@xeplr/db": "^1.0.0",
     "@xeplr/expression-handler": "^2.0.0",
@@ -52,7 +52,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "@xeplr/actions": "^1.4.6",
+    "@xeplr/actions": "^1.4.7",
     "@xeplr/jobs": "^2.3.0",
     "knex": "^3.3.0"
   },
