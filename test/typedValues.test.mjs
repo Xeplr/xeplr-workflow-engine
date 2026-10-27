@@ -1,0 +1,112 @@
+// What one step hands the next, through the real engine on a real Postgres.
+//
+// A list bound whole stays a list: the data step filters the rows an earlier
+// step produced (it used to get their JSON as one string). A field the action
+// declares as text still gets text. A date is written as the template asks.
+//
+// Needs WORKFLOW_TEST_PG = '{"host":"localhost","port":5432,"user":"…","password":"…"}'.
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+
+const PG = process.env.WORKFLOW_TEST_PG ? JSON.parse(process.env.WORKFLOW_TEST_PG) : null
+if (!PG) {
+  console.log('  skipped — set WORKFLOW_TEST_PG to run against Postgres')
+  process.exit(0)
+}
+
+const { registerApplication, runWithMt } = require('@xeplr/db')
+const { generateId } = require('@xeplr/utils/lib/helpers')
+const actions = require('@xeplr/actions')
+const engine = require('../index.js')
+
+const results = []
+const check = (n, c, extra) => { results.push(c); console.log((c ? '  ok   ' : '  FAIL ') + n + (c || extra === undefined ? '' : ' — ' + JSON.stringify(extra).slice(0, 600))) }
+
+const STAMP = Date.now()
+const WF_DB = 'xeplr_wf_typed_test_' + STAMP
+const MT = { mtId1: 'c' + (STAMP % 100000), mtId2: 'w' + (STAMP % 100000) }
+
+registerApplication('xeplr-workflow-test')
+// Stands in for a fetch: rows, a count and a period, as a db-fetch or a job gives them.
+actions.register({
+  name: 'wf-typed-rows',
+  inputSchema: [],
+  execute: async () => ({
+    rows: [{ ref: 'A1', amount: 500 }, { ref: 'A2', amount: 20 }, { ref: 'A3', amount: 900 }],
+    count: 3,
+    period: '2026-08-31T18:30:00.000Z'
+  })
+})
+// Records exactly what it was given, types and all.
+const seen = []
+actions.register({
+  name: 'wf-typed-seen',
+  inputSchema: [{ name: 'note', type: 'string' }, { name: 'n', type: 'number' }, { name: 'list', type: 'array' }],
+  execute: async (ctx) => { seen.push(ctx.input); return {} }
+})
+
+await engine.startEngine({
+  db: {
+    name: WF_DB, connection: PG, connectionName: 'workflow_typed_test',
+    mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
+  },
+  schedule: false
+})
+const Workflow = engine.db.model('Workflow')
+const Step = engine.db.model('WorkflowStep')
+const StepRun = engine.db.model('WorkflowStepRun')
+
+async function workflow(name, steps) {
+  const w = await Workflow.query().insert({ id: generateId(), name, kind: 'workflow', status: 'published' })
+  for (let i = 0; i < steps.length; i++) {
+    await Step.query().insert({ id: generateId(), workflowId: w.id, kind: 'auto', onError: 'stop', position: i, ...steps[i] })
+  }
+  return w
+}
+
+try {
+  await runWithMt(MT, async () => {
+    console.log('a list handed to the data step')
+    const w = await workflow('Typed', [
+      { stepKey: 'fetch', name: 'Fetch', actionName: 'wf-typed-rows', values: {} },
+      { stepKey: 'big', name: 'Big ones', actionName: 'data-operation', values: {
+        from: '{steps.fetch.output.rows}', where: 'amount > 100', columns: ['ref'],
+        format: true, title: 'Over 100 for {steps.fetch.output.period|date:MMMM YYYY:Asia/Kolkata}'
+      } },
+      { stepKey: 'seen', name: 'Seen', actionName: 'wf-typed-seen', values: {
+        note: '{steps.fetch.output.count}', n: '{steps.big.output.count}', list: '{steps.big.output.rows}'
+      } }
+    ])
+    const run = await engine.runner.startRun(w.id, {})
+    const steps = await StepRun.query().where({ runId: run.id }).orderBy('position')
+    const big = steps.find((s) => s.stepKey === 'big')
+    check("the run succeeds", (await engine.db.model("WorkflowRun").query().findById(run.id)).status === "success")
+    check('the data step got the rows as a list, and filtered them',
+      big && big.status === 'success' && JSON.stringify(big.output.rows) === '[{"ref":"A1"},{"ref":"A3"}]', big && big.output)
+    check('...and its title wrote the period as a month, in the zone asked for', big && /Over 100 for September 2026/.test(big.output.html), big && big.output.html)
+    check('the input recorded on the step is the list itself, not its JSON', big && Array.isArray(big.input.from) && big.input.from.length === 3, big && big.input)
+    const got = seen[0] || {}
+    check('a field declared as text gets text, even bound to a number', got.note === '3', got)
+    check('a number stays a number', got.n === 2, got)
+    check('a list stays a list', Array.isArray(got.list) && got.list.length === 2, got)
+
+    console.log('\na template the engine cannot fill')
+    const bad = await workflow('Bad date', [
+      { stepKey: 'fetch', name: 'Fetch', actionName: 'wf-typed-rows', values: {} },
+      { stepKey: 'seen', name: 'Seen', actionName: 'wf-typed-seen', values: { note: 'For {steps.fetch.output.rows|date:YYYY}' } }
+    ])
+    const badRun = await engine.runner.startRun(bad.id, {})
+    const after = await engine.db.model('WorkflowRun').query().findById(badRun.id)
+    check('fails the run, saying which step and why', after.status === 'failed' && /Step seen: .*needs a date/.test(after.error && after.error.message), after.error)
+  })
+} catch (err) {
+  check('no error', false, err.stack || err.message)
+} finally {
+  await engine.db.conn().destroy().catch(() => {})
+  const admin = require('knex')({ client: 'pg', connection: { ...PG, database: 'postgres' } })
+  await admin.raw(`DROP DATABASE IF EXISTS "${WF_DB}" WITH (FORCE)`).catch(() => {})
+  await admin.destroy()
+  const failed = results.filter((c) => !c).length
+  console.log(`\n${results.length - failed}/${results.length} passed`)
+  process.exit(failed ? 1 : 0)
+}

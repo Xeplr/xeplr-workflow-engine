@@ -54,7 +54,7 @@ engine/
 │  ├─ triggers.js           what starts a workflow: manual, api, schedule, job, and more
 │  ├─ jobs.js               jobs as steps (job-run) and as triggers (jobFinished)
 │  ├─ conditions.js         an arrow's `when` compiled into its condition
-│  ├─ actionCatalog.js      whitelist of @xeplr/actions built-ins + local actions
+│  ├─ actionCatalog.js      whitelist of @xeplr/actions built-ins + local actions (data-operation and export-table included)
 │  ├─ actions/              local actions: job-run, decide, screen-show
 │  ├─ envExposed.js         WORKFLOW_ENV_EXPOSED allowlist for {env.*}
 │  └─ db.js                 connectDb + model(name) bound to workflow's own connection
@@ -98,9 +98,11 @@ host gives workflow is the boundary.
 
 ## How a run behaves (`lib/workflowRunner.js`)
 
-- **Step values** are interpolated with `@xeplr/schema-handler` against
+- **Step values** are resolved with `@xeplr/schema-handler`'s `resolveAll` against
   `{ params, item, steps.<key>.output, previous_step.output, env, resumeKey, resumeUrl }`.
   `previous_step`/`steps` come from what ran in this run, not array position.
+  - **A value that is one binding keeps its type** (`from: "{steps.fetch.output.rows}"` hands over the list; `{params.count}` a number). Text around a binding makes text. A field the action declares `string` always gets text. Why: every value used to be text, so a list arrived as its JSON and the data step saw one row that was a string.
+  - **Dates are written as asked:** `{trigger.window.from|date:YYYY-MM:Asia/Kolkata}`. A template that cannot be filled (a pipe on something that is not a date, an unknown zone) **fails the run**, naming the step, instead of running with an empty file name.
 - **Routing**: no `transitions` → next step by `position`. With transitions →
   first match wins (`@xeplr/expression-handler`); a blank condition is the
   catch-all; targets are a `stepKey`, `end_success` or `end_failed`. No match
@@ -273,6 +275,7 @@ No database or network needed, except `triggers.test.mjs`, which runs on a real 
 - migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
 - migration 0016 repairing one converted early, and changing nothing on a second run |
 | `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered |
+| `typedValues.test.mjs` | On a real Postgres: rows from one step filtered by the data step as a list; a period written as a month in a zone; text fields get text, numbers and lists keep their type; a bad template fails the run by step |
 | `envExposed.test.mjs` | Nothing exposed by default; exact, case-sensitive matching; globs fail closed (against real `interpolateAll`) |
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |
 | `paths.test.mjs` | `MIGRATIONS_DIR` and `TENANT_MIGRATIONS_DIR` exist inside the package, hold SQL, and are listed in `readsFromDisk` (an undefined one makes the migrator run the HOST's `./migrations` against workflow's database) |
