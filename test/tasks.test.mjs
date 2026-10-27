@@ -91,6 +91,7 @@ try {
       open1.map((t) => t.assigneeRole).sort().join() === 'Production Head,QA Head', open1)
     check('...and the host was told of both', told.filter((t) => t.event === 'created' && open1.some((o) => o.id === t.taskId)).length === 2)
     const inboxMeera = await tasks.listMine(MEERA)
+    check('...with the period its case is for (none, started by hand)', inboxMeera.tasks[0].period === null)
     check('Meera\'s inbox has hers, titled, with Approve and Reject',
       inboxMeera.total === 1 && inboxMeera.tasks[0].title === 'Deviation on PO 450103 / 10' && inboxMeera.tasks[0].buttons.map((b) => b.key).join() === 'approved,rejected', inboxMeera)
     check('a Viewer\'s inbox is empty', (await tasks.listMine(NOBODY)).total === 0)
