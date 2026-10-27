@@ -27,6 +27,7 @@ class WorkflowTask extends BaseModel {
         status: { type: 'string', enum: ['queued', 'open', 'claimed', 'done', 'withdrawn'] },
         claimedBy: { type: ['string', 'null'], maxLength: 25 },
         claimedAt: { type: ['string', 'null'] },
+        openedAt: { type: ['string', 'null'] },
         decidedBy: { type: ['string', 'null'], maxLength: 25 },
         decidedAt: { type: ['string', 'null'] },
         decision: { type: ['string', 'null'], maxLength: 64 },
