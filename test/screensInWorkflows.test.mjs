@@ -90,6 +90,8 @@ try {
     check('another company has nothing waiting', (await flows.listWaiting({ user: ADMIN })).length === 0)
   })
   check('a screen for anyone is anyone\'s', flows.mayAnswer(null, SALES) && flows.mayAnswer('', { roles: [] }) && !flows.mayAnswer('Accounts', null))
+  check('buttons typed as words, or the JSON of a list', JSON.stringify(flows.buttonsOf('Approve, Send back')) === '[{"key":"Approve","label":"Approve"},{"key":"Send back","label":"Send back"}]' &&
+    flows.buttonsOf('[{"key":"a","label":"A"}]')[0].label === 'A' && flows.buttonsOf('').length === 0 && flows.buttonsOf('[broken').length === 0)
   check('buttons may be words', JSON.stringify(flows.buttonsOf(['Approve', { key: 'x' }, null, ''])) === '[{"key":"Approve","label":"Approve"},{"key":"x","label":"x"}]')
 } catch (err) {
   check('no error', false, err.stack || err.message)

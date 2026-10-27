@@ -61,19 +61,16 @@ console.log('\nwhat gets registered')
     registered.length === wanted.length - notReady.length + catalog.LOCAL.length + catalog.HIDDEN.length)
 }
 
-console.log('\nregistered, and deliberately not offered')
+console.log('\noffered: a screen step, now that a host can answer one')
 {
-  // screen-show is half of something: the other half is the app that owns the
-  // screens, reached through the /flows facade. The registry MUST have it, or a
-  // flow's steps cannot run at all — and the palette must NOT, or somebody
-  // drops one onto the ordinary canvas and that run parks forever with nothing
-  // anywhere able to resume it.
   const names = catalog.catalog().map((r) => r.name)
-  catalog.HIDDEN.forEach((def) => {
-    check(def.name + ' is registered, so a step naming it can run', actions.has(def.name))
-    check('...and is NOT in the catalog a palette is drawn from', !names.includes(def.name))
-  })
-  check('hiding one hides nothing else', names.includes('db-fetch') && names.includes('job-run'))
+  check('screen-show is in the catalog', names.includes('screen-show') && actions.has('screen-show'))
+  const shown = catalog.catalog().find((r) => r.name === 'screen-show')
+  check('...asking which screen and which role from lists, and the buttons as words',
+    shown.inputSchema.find((f) => f.name === 'screen').optionsFrom === 'screens' &&
+    shown.inputSchema.find((f) => f.name === 'assignTo').optionsFrom === 'roles' &&
+    shown.inputSchema.find((f) => f.name === 'buttons').type === 'string')
+  check('nothing is hidden today', catalog.HIDDEN.length === 0)
   check('decide (a step that only branches) is offered', names.includes('decide'))
   check('no job-chain actions are left', !names.some((n) => /^job-chain/.test(n)))
 }
