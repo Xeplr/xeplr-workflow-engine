@@ -101,6 +101,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0024` | `workflow_tasks.assigneeEmail`: an approver named by email address. Matched against the signed-in user's email; the inbox lists it to that person only |
 | `0023` | `workflow_steps.poll` (jsonb, `{ jobId }`): the step keeps checking, on that job's schedule ([below](#a-step-that-keeps-checking-workflow_stepspoll)). Null: it runs once |
 | `0022` | `workflow_tasks.openedAt` (timestamptz): when a task opened, as an instant — the inbox's `since`. `recordCreatedDate` is a plain timestamp, read back shifted by the offset on a non-UTC server ("waiting 6 hours" for a task a minute old in India) |
 | `0021` | **Tasks.** `workflow_tasks` (a wait a person answers: assignee user or role, claim, decision, due/escalation, history); `workflow_step_runs.actorUserId` (who answered) |
@@ -179,17 +180,24 @@ A wait that a **person** answers is a task (`workflow_tasks`): a screen
 per approver). Machine waits — an email link, a job — stay key-only.
 
 - **The `approval` step** (a `wait` step): `approvers` — roles
-  (`"QA Head, Production Head"`) or people (`"user:<id>"`); `need` — `all`
-  (default), `any`, or a number; `order` — `together` (default) or `inTurn`
-  (the next approver's task opens when the one before approves); `onReject` —
-  `stop` (default, the first reject decides) or `collect`; `title`; `notSame`;
+  (`"QA Head, Production Head"`) and/or people by **email address**
+  (`"QA Head, asha@acme.com"`; text with an `@` is a person, stored
+  lower-case). Never a user id: nobody designing a workflow knows one. Its
+  field says `pickRoles: true, typeEmails: true`, so a designer offers the
+  host's roles to pick and a box to type an address; one that does not know
+  those keys shows a text box. `need` — `all` (default), `any`, or a number;
+  `order` — `together` (default) or `inTurn` (the next approver's task opens
+  when the one before approves); `onReject` — `stop` (default, the first
+  reject decides) or `collect`. `need`, `order` and `onReject` carry
+  `options` with labels, so a designer shows dropdowns. Then `title`; `notSame`;
   `dueInHours`, `escalateTo`. Its output, for its arrows and for a meeting
   point after it: `{ decision: 'approved'|'rejected', approved, rejected,
   answers: [{ by, role, decision, comment, at }] }`. It is the meeting point's
   rule counted over tasks: one box to draw, not a split to wire. Needing more
   approvals than people asked fails the step, saying so.
-- **Who may act**: the user on the request (`{ id, roles }`) — a task for a
-  user is theirs, for a role anyone's holding it, for neither anyone's in the
+- **Who may act**: the user on the request (`{ id, email, roles }`) — a task
+  for an email is the person's whose email it is (any case), for a user id
+  theirs, for a role anyone's holding it, for neither anyone's in the
   company; a Super Admin any. A claimed task is the claimer's alone
   (`TASK_CLAIMED`). The engine never reads auth tables.
 - **Four eyes**: the person who started the case never approves it; nor does

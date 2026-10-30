@@ -144,6 +144,23 @@ try {
     await tasks.answer((await taskFor(r4.id, MEERA2)).id, { decision: 'approved' }, MEERA2)
     check('...another QA Head can', (await runOf(r4.id)).status === 'success')
 
+    console.log('\nby email: a role and a person, never an id')
+    const byEmail = await workflow('By email', [approve('sign', { approvers: 'QA Head, Asha@Acme.com' }), ...OUTCOMES])
+    const re = await start(byEmail)
+    const openE = await Task.query().where({ runId: re.id })
+    check('one task for the role, one for the email, stored lower-case',
+      openE.length === 2 && openE.some((t) => t.assigneeRole === 'QA Head') && openE.some((t) => t.assigneeEmail === 'asha@acme.com' && !t.assigneeUserId && !t.assigneeRole), openE)
+    const ASHA = { id: 'u_asha_e', email: 'ASHA@acme.com', roles: ['Viewer'] }
+    const ashaInbox = await tasks.listMine(ASHA)
+    check('the person with that email has it in their inbox (any case), and only it', ashaInbox.total === 1 && ashaInbox.tasks[0].assigneeEmail === 'asha@acme.com', ashaInbox)
+    check('a QA Head does not get the email\'s task', (await tasks.listMine(MEERA)).tasks.filter((t) => t.runId === re.id).length === 1)
+    const emailTask = openE.find((t) => t.assigneeEmail)
+    const notHers = await refusal(tasks.answer(emailTask.id, { decision: 'approved' }, MEERA))
+    check('...nor may answer it, told whose it is', notHers && notHers.code === 'NOT_YOURS' && /asha@acme\.com/.test(notHers.message), notHers && notHers.message)
+    await tasks.answer(emailTask.id, { decision: 'approved' }, ASHA)
+    await tasks.answer(openE.find((t) => t.assigneeRole).id, { decision: 'approved' }, MEERA)
+    check('both approve: the step goes on', (await runOf(re.id)).status === 'success')
+
     console.log('\nany one, at least N, in turn')
     const anyOne = await workflow('Any one', [approve('sign', { approvers: 'user:u_asha, user:u_ben, user:u_chen', need: 'any' }), ...OUTCOMES])
     const r5 = await start(anyOne)

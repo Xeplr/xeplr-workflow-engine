@@ -24,6 +24,7 @@ class WorkflowTask extends BaseModel {
         position: { type: 'integer' },
         assigneeUserId: { type: ['string', 'null'], maxLength: 25 },
         assigneeRole: { type: ['string', 'null'], maxLength: 128 },
+        assigneeEmail: { type: ['string', 'null'], maxLength: 320 },
         status: { type: 'string', enum: ['queued', 'open', 'claimed', 'done', 'withdrawn'] },
         claimedBy: { type: ['string', 'null'], maxLength: 25 },
         claimedAt: { type: ['string', 'null'] },
