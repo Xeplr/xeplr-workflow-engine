@@ -70,7 +70,8 @@ console.log('\noffered: a screen step, now that a host can answer one')
     shown.inputSchema.find((f) => f.name === 'screen').optionsFrom === 'screens' &&
     shown.inputSchema.find((f) => f.name === 'assignTo').optionsFrom === 'roles' &&
     shown.inputSchema.find((f) => f.name === 'buttons').type === 'string')
-  check('nothing is hidden today', catalog.HIDDEN.length === 0)
+  check('one is hidden: the job action of a step that keeps checking, never a step itself', catalog.HIDDEN.length === 1 &&
+    catalog.HIDDEN[0].name === 'workflow-poll' && !names.includes('workflow-poll'))
   check('decide (a step that only branches) is offered', names.includes('decide'))
   check('no job-chain actions are left', !names.some((n) => /^job-chain/.test(n)))
 }

@@ -42,6 +42,10 @@ class WorkflowStep extends BaseModel {
         // declaration unions into the schema a run is validated against
         // before any step executes. See migrations/0011.
         params: { type: ['array', 'null'] },
+        // KEEPS CHECKING: { jobId } — the job whose schedule runs this step
+        // again and again while a run listens on it (pollStep). Null: it runs
+        // once. See migrations/0023.
+        poll: { type: ['object', 'null'] },
         isActive: { type: 'boolean' },
         recordCreatedDate: { type: ['string', 'null'] },
         recordModifiedDate: { type: ['string', 'null'] },
