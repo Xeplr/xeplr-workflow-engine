@@ -19,6 +19,15 @@ const files = readdirSync(dir)
   .filter((f) => /\.test\.(mjs|cjs|js)$/.test(f))
   .sort()
 
+// A DATA ROOT for every suite, as a host has at boot: @xeplr/actions keeps
+// each tenant's files under XEPLR_DATA_DIR and refuses to run a file step
+// without one. A scratch folder unless the caller set it.
+if (!process.env.XEPLR_DATA_DIR) {
+  const { mkdtempSync, realpathSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  process.env.XEPLR_DATA_DIR = realpathSync(mkdtempSync(path.join(tmpdir(), 'xeplr-wf-data-')))
+}
+
 let failed = 0
 for (const file of files) {
   const full = path.join(dir, file)
