@@ -34,7 +34,7 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 | `callbackRequiredEnv` | `['WORKFLOW_PUBLIC_URL']`, only for hosts using steps that call out (`job-run`) |
 | `MIGRATIONS_DIR`, `TENANT_MIGRATIONS_DIR` | Where the SQL is, for the standalone server and for a bundle that ships the folders |
 | `db` | `connectDb`, with `.model(name)` bound to workflow's own connection |
-| `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey` (`opts.actor`: who answered), `resolveParams`, `collectParams`; admin `cancelRun(runId, { reason, actor })`, `retryRun(runId, { reason, actor })` |
+| `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey` (`opts.actor`: who answered), `resolveParams`, `collectParams`; admin `cancelRun(runId, { reason, actor })`, `retryRun(runId, { reason, actor })`; `pollStep(workflowId, stepKey)` — one check of a step that keeps checking ([below](#a-step-that-keeps-checking-workflow_stepspoll)) |
 | `tasks` | `lib/tasks.js`: `listMine(user, { limit, offset })`, `claim`, `release`, `answer(id, body, user)`, `reassign(id, { userId \| role }, { reason, actor })`, `sweepDue` ([Tasks](#tasks-and-approvals)) |
 | `recovery` | `lib/recovery.js`: the sweeper — `sweep()` runs one pass now; `startSweeping`, `stopSweeping` |
 | `versions` | `lib/versions.js`: `stepsForRun(run)` (the steps a run reads), `pinVersion(workflowId, steps)` |
@@ -42,7 +42,7 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 | `triggers`, `registerTrigger` | `lib/triggers.js`: what starts a workflow — the registry of kinds, `validate`, `emit`, the schedule `tick`, `describe` ([Triggers](#triggers-libtriggersjs)) |
 | `conditions` | `lib/conditions.js`: `whenToCondition`, `compileTransitions` ([Conditions](#conditions-written-simply-libconditionsjs)) |
 | `jobs`, `jobFinished` | `lib/jobs.js`: jobs as steps and as triggers — `setJobStarter`, `jobFinished` ([Jobs](#jobs-as-steps-and-as-triggers-libjobsjs)) |
-| `actionCatalog`, `envExposed`, `xcfgSetup` | The action whitelist (and `allowRetry(names)`: a host's own actions that are safe to run again after a crash), the `WORKFLOW_ENV_EXPOSED` allowlist, the shared `xeplr_configs` attachment |
+| `actionCatalog`, `envExposed`, `xcfgSetup` | The action whitelist (and `allowRetry(names)`: a host's own actions that are safe to run again after a crash; `foundWhen(name, rule)` / `isFound(name, output)`: when a step that keeps checking found something), the `WORKFLOW_ENV_EXPOSED` allowlist, the shared `xeplr_configs` attachment |
 
 The package reads `migrations/` and `migrations-tenants/` from disk (`"xeplr": { "readsFromDisk": [...] }` in `package.json`), so a build that compiles it must ship those folders beside it.
 
@@ -101,6 +101,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0023` | `workflow_steps.poll` (jsonb, `{ jobId }`): the step keeps checking, on that job's schedule ([below](#a-step-that-keeps-checking-workflow_stepspoll)). Null: it runs once |
 | `0022` | `workflow_tasks.openedAt` (timestamptz): when a task opened, as an instant — the inbox's `since`. `recordCreatedDate` is a plain timestamp, read back shifted by the offset on a non-UTC server ("waiting 6 hours" for a task a minute old in India) |
 | `0021` | **Tasks.** `workflow_tasks` (a wait a person answers: assignee user or role, claim, decision, due/escalation, history); `workflow_step_runs.actorUserId` (who answered) |
 | `0020` | **Splits and meeting points.** `workflow_steps.leave`, `workflow_steps.join`; `workflow_run_splits` (a step that opened paths, each time it ran: `opened`, `joinedAt`); `workflow_run_arrivals` (a path reaching a meeting point with its `decision` and `output`, `late` once met); `workflow_run_paths.fromSplitId` |
@@ -400,6 +401,29 @@ await jobs.init({ /* … */ onFinish: (report) => engine.jobFinished(report) });
 
 Migration 0016 repairs a database that ran 0015's first release, which left the key empty and the arrows without `when`. A single comparison gets its `when` back. A nested one still runs as before, and the jobs screen says it was changed elsewhere.
 
+## A step that keeps checking (`workflow_steps.poll`)
+
+Any step can be made to keep checking: a folder (`file-list`), a mailbox
+(`email-read`), a table (`db-fetch`). How often is a **job's** schedule — the
+step has its own job, and `poll` names it:
+
+```json
+{ "stepKey": "watch", "actionName": "file-list", "values": { "folder": "/data/inbox" },
+  "poll": { "jobId": "<its job>" },
+  "transitions": [{ "mode": "each", "source": "output.files", "target": "read" }] }
+```
+
+The job runs the action `workflow-poll` with `{ workflowId, stepKey }`. The engine
+registers it (hidden from the step palette); the host creates the job.
+
+- **A run that reaches the step parks there, listening.** The step is not run on arrival; the job runs it.
+- **Each tick runs the step again** for every run listening on it, with that run's values:
+  - **found nothing:** the step records when it checked (`output.checks`, `lastCheckedAt`). No run starts;
+  - **found something:** a run of its own starts from the step's arrows, with what was found as the step's output. An `each` arrow then gives one run per file. That run is linked to the listening run (`workflow_run_edges`, `trigger: 'poll'`), and reads every earlier step's output as `{steps.<key>.output}`, just as the steps after it would have done;
+  - **the check failed:** recorded on the step (`output.lastError`) and in the tick's result. It keeps listening.
+- **The listening run stays `waiting`**, whatever its runs do. Cancelling it stops it.
+- **What counts as found is each action's own rule.** Without one, an output with a count (`count`, `messageCount`, `rowCount`…) found something when the count is above zero; otherwise, any list in it that is not empty. A host adds its own with `actionCatalog.foundWhen(name, (output) => …)`.
+
 ## Tests
 
 ```bash
@@ -421,7 +445,8 @@ No database or network needed, except the suites marked "On a real Postgres" and
 - the schedule's first sight, its due time, two ticks starting it once, a changed cron
 - migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
 - migration 0016 repairing one converted early, and changing nothing on a second run |
-| `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered |
+| `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered; `workflow-poll` registered but hidden |
+| `polling.test.mjs` | On a real Postgres: a run parking on a step that keeps checking, the step not run on arrival; a tick finding nothing starting nothing and recording the check; each find a run of its own, with what was found and the earlier steps' outputs, linked to the listening run, which keeps waiting; a failed check recorded while it keeps listening; cancelling stopping it; an `each` arrow giving a run per file; what counts as found, and an action's own rule; a step that does not poll versioned as before |
 | `runningSafely.test.mjs` | On a real Postgres: a loop stopped at `maxStepRuns`; a failure routed by its arrows with its error readable; an `each` arrow never past its limit, joining once; children that paused and were resumed still letting the parent join; `job-run` waiting for a busy job, failing at once with `whenBusy: fail`, and giving up after `busyWaitMinutes` |
 | `screensInWorkflows.test.mjs` | On a real Postgres: a review screen handed rows, assigned to Accounts and listed only for Accounts (and a Super Admin); refused to another role; needing one of its own buttons; Approve and Send back taking their own arrows with the ticked rows; nothing waiting for another company |
 | `periodsAndMemory.test.mjs` | On a real Postgres: a monthly schedule firing on the 1st with September's window in India and its required input filled from it; `recall`/`remember` making a second run for the same month do nothing and a new month run; memory per workflow and per company; `forget` |
