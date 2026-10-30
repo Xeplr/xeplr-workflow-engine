@@ -30,7 +30,7 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 |---|---|
 | `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `onTask` (`(event, task)`: told when a task opens, falls due, is escalated or reassigned, so the host notifies people), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
 | `resumeByKey(key, output?, opts?)` | Server-side, in-process resume of a run parked on a `wait` step. `opts.status: 'failed'` resolves the step as failed. Throws `err.code` `RESUME_KEY_INVALID` (used/unknown, normal for host routes) or `RESUME_KEY_NOT_READY` (step still running; nothing consumed, retry) |
-| `embedRequiredEnv` | `['DB_WORKFLOW']`, spread into a host's `env.required.js` |
+| `embedRequiredEnv` | `['DB_WORKFLOW']`, spread into a host's `env.required.js`. Spread `@xeplr/actions`' `requiredEnv` too (`XEPLR_DATA_DIR`): a step's files are kept in the run's tenant folder under it, and a file step refuses to run without it |
 | `callbackRequiredEnv` | `['WORKFLOW_PUBLIC_URL']`, only for hosts using steps that call out (`job-run`) |
 | `MIGRATIONS_DIR`, `TENANT_MIGRATIONS_DIR` | Where the SQL is, for the standalone server and for a bundle that ships the folders |
 | `db` | `connectDb`, with `.model(name)` bound to workflow's own connection |
@@ -430,7 +430,7 @@ registers it (hidden from the step palette); the host creates the job.
 npm test          # node test/run.mjs — each *.test.mjs in its own process
 ```
 
-No database or network needed, except the suites marked "On a real Postgres" and `triggers.test.mjs`, which run on a real Postgres when `WORKFLOW_TEST_PG='{"host":…,"port":…,"user":…,"password":…}'` is set (scratch databases, created and dropped) and is skipped otherwise. CI and the release start a throwaway Postgres and set it, so neither ships on a skipped suite. `npm install` first: the peers install with it.
+`test/run.mjs` gives every suite a scratch `XEPLR_DATA_DIR` unless one is set. No database or network needed, except the suites marked "On a real Postgres" and `triggers.test.mjs`, which run on a real Postgres when `WORKFLOW_TEST_PG='{"host":…,"port":…,"user":…,"password":…}'` is set (scratch databases, created and dropped) and is skipped otherwise. CI and the release start a throwaway Postgres and set it, so neither ships on a skipped suite. `npm install` first: the peers install with it.
 
 | Suite | Covers |
 |---|---|
