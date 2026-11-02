@@ -195,6 +195,13 @@ per approver). Machine waits — an email link, a job — stay key-only.
   answers: [{ by, role, decision, comment, at }] }`. It is the meeting point's
   rule counted over tasks: one box to draw, not a split to wire. Needing more
   approvals than people asked fails the step, saying so.
+- **What a step hands on, before it runs**: the catalog (`GET /actions`) says
+  for each action whether its output can be read without a side effect
+  (`preview: true`, @xeplr/actions' `previewAction`; asked through
+  @xeplr/workflow-api's `POST /workflows/:id/steps/preview`) and, for one that
+  writes or sends, its `example` output. The approval step's example is its
+  fixed output (`decision`, `approved`, `rejected`, `answers`), so a designer
+  shows it without anyone typing it.
 - **Who may act**: the user on the request (`{ id, email, roles }`) — a task
   for an email is the person's whose email it is (any case), for a user id
   theirs, for a role anyone's holding it, for neither anyone's in the
