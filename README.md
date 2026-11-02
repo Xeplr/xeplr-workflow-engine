@@ -369,6 +369,8 @@ A job meets a workflow in two places, and both are ordinary workflows:
 
 Branch on how a job ended with a `decide` step: it does nothing itself, and the conditions on its arrows read `{trigger.*}`.
 
+**A `decide` step (a Condition box) decides on what came into it, and hands that on.** Its `output` is the output of the step before it on its path (`{}` when it is reached first), so its rules read `output.count`, `output.rows`, … — what arrived — and the step after it receives the same data, as if the box were not there. A rule that looks at **each row** (`mode: 'each'`, `source: 'output.rows'`) is checked on each row, with `item.*`: before 4.3 its condition was also checked against the whole result first, where `item.*` does not exist, so an each-row rule with a condition never ran. `test/conditionPassesOn.test.mjs`.
+
 ```json
 { "name": "After the nightly load", "status": "published",
   "trigger": { "kind": "job", "jobId": "<load>", "when": "finished" },
