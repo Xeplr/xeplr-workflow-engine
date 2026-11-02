@@ -98,6 +98,15 @@ console.log('\nwhat the UI is handed')
   // Never. It is a function, it would not survive JSON, and an endpoint that
   // hands out executors is an endpoint that explains how to bypass itself.
   check('and none of them carries its executor', rows.every((r) => r.execute === undefined))
+  // WHAT A STEP HANDS ON, before anything runs: a reader can be previewed, a
+  // writer carries its example, and the preview function itself stays here.
+  const byName = Object.fromEntries(rows.map((r) => [r.name, r]))
+  check('a step that reads says it can be previewed (file-list, db-fetch)', byName['file-list'].preview === true && byName['db-fetch'].preview === true)
+  check('a step that writes cannot, and carries its example output instead (file-delete)',
+    byName['file-delete'].preview === false && byName['file-delete'].example && byName['file-delete'].example.deleted === true)
+  check('no row carries a preview function', rows.every((r) => typeof r.preview === 'boolean'))
+  check('an approval carries its fixed output: decision, the counts, the answers',
+    byName.approval.example && byName.approval.example.decision === 'approved' && Array.isArray(byName.approval.example.answers))
 }
 
 console.log('\na screen function is not a step')
