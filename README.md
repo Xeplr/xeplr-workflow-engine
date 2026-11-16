@@ -53,6 +53,7 @@ engine/
 ├─ index.js                 startEngine, resumeByKey, the env lists, and the parts below
 ├─ lib/
 │  ├─ workflowRunner.js     startRun, resumeByKey, resolveParams, collectParams, recoverRun
+│  ├─ stepReport.js         a running step's progress, log lines and stop (system.onProgress / log / signal)
 │  ├─ versions.js           the steps a run reads: pinned when it starts
 │  ├─ recovery.js           the sweeper: runs whose process died, waits past their time, overdue tasks
 │  ├─ tasks.js              what people answer: inbox, claim, answer, approvals, reassign
@@ -101,6 +102,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0025` | `workflow_step_runs.progress` and `.log`: how far a running step has got (its action's newest numbers, and when) and its log lines, oldest first, the newest 300 — saved as it runs, at most every two seconds ([below](#a-running-step-says-how-far-it-has-got)) |
 | `0024` | `workflow_tasks.assigneeEmail`: an approver named by email address. Matched against the signed-in user's email; the inbox lists it to that person only |
 | `0023` | `workflow_steps.poll` (jsonb, `{ jobId }`): the step keeps checking, on that job's schedule ([below](#a-step-that-keeps-checking-workflow_stepspoll)). Null: it runs once |
 | `0022` | `workflow_tasks.openedAt` (timestamptz): when a task opened, as an instant — the inbox's `since`. `recordCreatedDate` is a plain timestamp, read back shifted by the offset on a non-UTC server ("waiting 6 hours" for a task a minute old in India) |
@@ -166,12 +168,27 @@ host gives workflow is the boundary.
 - **A wait step's own key** reaches its action as `system.resumeKey` (and
   `{resumeKey}` / `{resumeUrl}` in its values), so an action can hand it to
   something in the same process instead of over a URL.
+- **A running step says how far it has got** (`lib/stepReport.js`) — see [below](#a-running-step-says-how-far-it-has-got).
 - **Tenant context**: after the first lookup, all DB work runs inside
   `runWithMt()` with the run's stored `mtId`s, because a resume can arrive long
   after the starting request.
 
 Not read by the runner: `workflows.status`, `workflows.kind`,
 `workflow_steps.layout`, `workflow_steps.sampleOutput`.
+
+## A running step says how far it has got
+
+Every action a step runs is handed, in `system`:
+
+| | |
+|---|---|
+| `onProgress(numbers)` | The newest numbers — `{ rowsRead, rowsWritten, percent, … }`, whatever the action counts. A gauge: each call replaces the last |
+| `log(message, { level })` | A line for the person watching ("Reading orders.csv (3.0 GB) into orders"). Kept oldest first, the newest 300 |
+| `signal` | An `AbortSignal`, aborted when the case is cancelled: the action stops its own work (a load stops between batches) rather than running on to the end. Its `reason` is an error with `code: 'STOPPED'` |
+
+Both are saved on the step run (`workflow_step_runs.progress`, `.log`) **while it runs**, so a run view can show a 3 GB load moving rather than nothing for eight minutes. **At most every two seconds, coalesced:** an action may report every batch, thousands of times, and only the newest numbers are written. No timer — the next report triggers the next write, and the end of the step writes the rest — so nothing is left running.
+
+**A cancel stops the step, from anywhere.** `cancelRun` aborts the signal at once when the step runs in this process; every write also reads the run's status, so a cancel made in another process (another worker, the API while the jobs process runs the step) stops it within two seconds of its next report. Before 4.3.1 a cancelled case's running step carried on to its end.
 
 ## Tasks and approvals
 
@@ -463,6 +480,7 @@ npm test          # node test/run.mjs — each *.test.mjs in its own process
 - migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
 - migration 0016 repairing one converted early, and changing nothing on a second run |
 | `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered; the file steps offered, `file-delete` among them; `workflow-poll` registered but hidden |
+| `stepProgress.test.mjs` | On a real Postgres: a step's numbers and log readable from outside while it runs, and the last of them once it ends, in order; a hundred reports written as the newest only; a cancel stopping the step part-way and the case ending `CANCELLED`; a cancel written by another process stopping it at its next report |
 | `polling.test.mjs` | On a real Postgres: a run parking on a step that keeps checking, the step not run on arrival; a tick finding nothing starting nothing and recording the check; each find a run of its own, with what was found and the earlier steps' outputs, linked to the listening run, which keeps waiting; a failed check recorded while it keeps listening; cancelling stopping it; an `each` arrow giving a run per file; what counts as found, and an action's own rule; a step that does not poll versioned as before |
 | `runningSafely.test.mjs` | On a real Postgres: a loop stopped at `maxStepRuns`; a failure routed by its arrows with its error readable; an `each` arrow never past its limit, joining once; children that paused and were resumed still letting the parent join; `job-run` waiting for a busy job, failing at once with `whenBusy: fail`, and giving up after `busyWaitMinutes` |
 | `screensInWorkflows.test.mjs` | On a real Postgres: a review screen handed rows, assigned to Accounts and listed only for Accounts (and a Super Admin); refused to another role; needing one of its own buttons; Approve and Send back taking their own arrows with the ticked rows; nothing waiting for another company |

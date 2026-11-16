@@ -21,6 +21,9 @@ class WorkflowStepRun extends BaseModel {
         input: { type: ['object', 'null'] },
         output: { type: ['object', 'null'] },
         error: { type: ['object', 'null'] },
+        // How far a running step has got, and its log lines (0025, lib/stepReport.js).
+        progress: { type: ['object', 'null'] },
+        log: { type: ['array', 'null'] },
         durationMs: { type: ['integer', 'null'] },
         position: { type: 'integer' },
         isActive: { type: 'boolean' },
