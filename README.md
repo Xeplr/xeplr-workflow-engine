@@ -28,7 +28,7 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 
 | Export | Purpose |
 |---|---|
-| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `onTask` (`(event, task)`: told when a task opens, falls due, is escalated or reassigned, so the host notifies people), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
+| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `onTask` (`(event, task, info)`: told when a task opens (`'created'`), is due a reminder (`'reminder'`, info `{ by, waited }`), is escalated (`'escalated'`, info `{ from, to, keep, waited }`) or reassigned, so the host notifies people — see [Reminders and escalation](#reminders-and-escalation)), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
 | `resumeByKey(key, output?, opts?)` | Server-side, in-process resume of a run parked on a `wait` step. `opts.status: 'failed'` resolves the step as failed. Throws `err.code` `RESUME_KEY_INVALID` (used/unknown, normal for host routes) or `RESUME_KEY_NOT_READY` (step still running; nothing consumed, retry) |
 | `embedRequiredEnv` | `['DB_WORKFLOW']`, spread into a host's `env.required.js`. Spread `@xeplr/actions`' `requiredEnv` too (`XEPLR_DATA_DIR`): a step's files are kept in the run's tenant folder under it, and a file step refuses to run without it |
 | `callbackRequiredEnv` | `['WORKFLOW_PUBLIC_URL']`, only for hosts using steps that call out (`job-run`) |
@@ -104,6 +104,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0027` | **Reminders and escalation.** `workflow_tasks.nudges` (a task's plan in real times, and what has been sent), `nextNudgeAt` (the soonest thing still due; how the sweep finds and claims it), `alsoFor` (who else may answer after an escalation that kept the task) ([above](#reminders-and-escalation)) |
 | `0026` | **Waits.** `workflow_resume_keys.wakeAt`, `wakeOutput`, `watch`, `nextCheckAt` — when a Wait step wakes by itself and with what, and what it checks for ([below](#waiting-the-wait-step)); `workflow_trigger_states.seen`, `lastCheckedAt` — what a watch trigger already started runs for |
 | `0025` | `workflow_step_runs.progress` and `.log`: how far a running step has got (its action's newest numbers, and when) and its log lines, oldest first, the newest 300 — saved as it runs, at most every two seconds ([below](#a-running-step-says-how-far-it-has-got)) |
 | `0024` | `workflow_tasks.assigneeEmail`: an approver named by email address. Matched against the signed-in user's email; the inbox lists it to that person only |
@@ -210,7 +211,7 @@ per approver). Machine waits — an email link, a job — stay key-only.
   when the one before approves); `onReject` — `stop` (default, the first
   reject decides) or `collect`. `need`, `order` and `onReject` carry
   `options` with labels, so a designer shows dropdowns. Then `title`; `notSame`;
-  `dueInHours`, `escalateTo`. Its output, for its arrows and for a meeting
+  `reminders` (below). Its output, for its arrows and for a meeting
   point after it: `{ decision: 'approved'|'rejected', approved, rejected,
   answers: [{ by, role, decision, comment, at }] }`. It is the meeting point's
   rule counted over tasks: one box to draw, not a split to wire. Needing more
@@ -241,14 +242,53 @@ per approver). Machine waits — an email link, a job — stay key-only.
   or anyone; due first, then oldest; paged (`limit` ≤ 200, `offset`, `total`).
   Each carries its screen and buttons, or Approve/Reject, and the case's
   `period` when what started it had one.
-- **Overdue**: past `dueAt` the host is told once (`onTask('due')`); with
-  `escalateTo` the task moves to that role (`'escalated'`), recorded in its
-  `history`.
+- **Reminders and escalation**: see [below](#reminders-and-escalation). The
+  older `dueInHours` / `escalateTo` still work (told once with
+  `onTask('due')`, moved to a role) but are superseded, and hidden from a
+  designer's form.
 - **Admin** (needs a reason, kept with who gave it): `tasks.reassign` to a user or
   role; `runner.cancelRun` (the case fails as `CANCELLED`, its tasks withdrawn);
   `runner.retryRun` — runs the step a crash interrupted once a person has
   checked it did not already do its work (one-path cases; a case on several
   paths is started again).
+
+## Reminders and escalation
+
+A task step (`approval`, `screen-show`) may carry **`reminders`** in its
+values — `hidden` and `control: 'reminders'` in the schema, so a designer
+draws its own box for it rather than a form field:
+
+```js
+reminders: {
+  remind:   [{ after: 8, unit: 'hours', by: ['email', 'app'] }, { after: 16, unit: 'hours', by: ['email', 'app', 'phone'] }],
+  escalate: { after: 1, unit: 'days', to: { kind: 'role', value: 'Plant Head' }, keep: true }
+}
+```
+
+- `unit` is `minutes`, `hours` or `days`; `by` names the channels the HOST
+  delivers (the engine only says which). `to.kind` is `person` (an email, or a
+  user id), `role`, or `value` — a value bound from an earlier step
+  (`{steps.plan.output.supervisorEmail}`), resolved when the task opens: text
+  with an `@` is an email, anything else a user id.
+- **`keep: true`** (default): the task is also given to them — both can answer
+  (`workflow_tasks.alsoFor`, read by `isFor` and the inbox). **`keep: false`**:
+  it is handed over; a claim on it is released.
+- **When a task opens** the rows become its plan in real times
+  (`workflow_tasks.nudges`, `nextNudgeAt`). An approver waiting their turn gets
+  theirs when the turn comes, from then.
+- **The sweep sends what is due** (`tasks.sweepNudges`, inside the existing
+  sweep — no timer of its own): `onTask('reminder', task, { by, waited })`,
+  `onTask('escalated', task, { from, to, keep, waited })`. Two rows due in one
+  pass are one reminder by every channel either asked for. Each is written in
+  the task's `history` and as a line on the step's log ("Reminded QA Head
+  (email, app): waiting 8 hours", "Also given to Plant Head: not done after 1
+  day by QA Head").
+- **Exactly once across processes**: a task is claimed by moving its
+  `nextNudgeAt` with a conditional update; only the process whose update
+  landed tells the host.
+- **Answered, withdrawn or cancelled**: the task leaves `open`/`claimed` and
+  the sweep never reads it again — no reminder after a decision, and nothing
+  to take down.
 
 ## Parallel paths and meeting points
 
