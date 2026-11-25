@@ -334,7 +334,7 @@ the same deviation — and move on when enough of them have answered.
 | `schedule` | `cron` (`"0 9 * * 1"`), `timezone?` | when the cron expression is due |
 | `job` | `jobId`, `when`: `success` (default) \| `failed` \| `finished` | when that job finishes that way |
 | `file` | `folder`, `named?` (`*.csv`), `checkEveryMinutes?` (5) | **each new file** in the folder starts a run, with `{trigger.file}` (`name`, `path`, `size`, `modifiedAt`) |
-| `email` | `connectionInfoId?` (empty: the app's own mailbox), `fromContains?`, `subjectContains?`, `mailboxFolder?`, `checkEveryMinutes?` | **each new email** starts a run, with `{trigger.email}` |
+| `email` | the app's own mailbox; `fromContains?`, `subjectContains?`, `mailboxFolder?`, `checkEveryMinutes?` | **each new email** starts a run, with `{trigger.email}` |
 
 Every kind also takes `enabled: false`, which switches it off without losing it.
 
@@ -451,7 +451,7 @@ Migration 0016 repairs a database that ran 0015's first release, which left the 
 |---|---|---|
 | `time` | `amount`, `unit` (`minutes` / `hours` / `days`) | that long has passed. Output `{ waited: true }` |
 | `date` | `date` — a value from an earlier step or typed (`2026-12-01` is midnight that day on the server's clock) | that moment has come (one already past: at the next pass) |
-| `arrival` | `arrives`: `reply`, `file` (`folder`, `named?`) or `email` (`connectionInfoId?`, `fromContains?`, `subjectContains?`) | it arrives. Output `{ arrived: true, files \| messages }`, or for a reply what was sent with it |
+| `arrival` | `arrives`: `reply`, `file` (`folder`, `named?`) or `email` (the app's own mailbox; `fromContains?`, `subjectContains?`) | it arrives. Output `{ arrived: true, files \| messages }`, or for a reply what was sent with it |
 
 For something arriving, one optional limit: **`tooLongAmount` + `tooLongUnit`** ("if it takes longer than 3 days"). Past it the wait ends with `{ tooLong: true }`, so an arrow of its own (`output.tooLong = true`, drawn as "Took too long") can send a reminder and come back to the Wait.
 
