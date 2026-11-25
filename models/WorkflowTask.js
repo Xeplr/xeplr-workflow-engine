@@ -38,6 +38,11 @@ class WorkflowTask extends BaseModel {
         escalateTo: { type: ['string', 'null'], maxLength: 128 },
         escalatedAt: { type: ['string', 'null'] },
         history: { type: ['array', 'null'] },
+        // Reminders & escalation (0027): the plan in real times, the soonest
+        // thing still due, and who else may answer after a kept escalation.
+        nudges: { type: ['object', 'null'] },
+        nextNudgeAt: { type: ['string', 'null'] },
+        alsoFor: { type: ['array', 'null'] },
         isActive: { type: 'boolean' },
         recordCreatedDate: { type: ['string', 'null'] },
         recordModifiedDate: { type: ['string', 'null'] },
