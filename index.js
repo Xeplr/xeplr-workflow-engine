@@ -334,6 +334,9 @@ module.exports = {
   conditions: require('./lib/conditions'),
   // The sweeper (sweep() runs one pass now) and the steps a run reads.
   recovery: recovery,
+  // A Wait step's wake-ups (lib/waits.js): wakeDue() — run by the sweep, or
+  // by a host's own job when the sweep is off.
+  waits: require('./lib/waits'),
   // What people answer: the inbox, claim, answer, reassign (lib/tasks.js).
   tasks: tasks,
   versions: versions,

@@ -22,6 +22,10 @@ class WorkflowTriggerState extends BaseModel {
         lastRunId: { type: ['string', 'null'], maxLength: 25 },
         lastSkippedAt: { type: ['string', 'null'] },
         lastSkipReason: { type: ['string', 'null'] },
+        // A watch trigger (a file or an email arrives, 0026): what it has
+        // already started runs for, and when it last looked.
+        seen: { type: ['array', 'null'] },
+        lastCheckedAt: { type: ['string', 'null'] },
         isActive: { type: 'boolean' },
         recordCreatedDate: { type: ['string', 'null'] },
         recordModifiedDate: { type: ['string', 'null'] },

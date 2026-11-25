@@ -22,6 +22,12 @@ class WorkflowResumeKey extends BaseModel {
         pathId: { type: ['string', 'null'], maxLength: 25 },
         // Set when the step has a timeoutMs; the sweeper fails the wait after it.
         expiresAt: { type: ['string', 'null'] },
+        // A Wait step (lib/actions/wait.js, migration 0026): when it wakes by
+        // itself and with what, and what it checks for while it waits.
+        wakeAt: { type: ['string', 'null'] },
+        wakeOutput: { type: ['object', 'null'] },
+        watch: { type: ['object', 'null'] },
+        nextCheckAt: { type: ['string', 'null'] },
         isActive: { type: 'boolean' },
         recordCreatedDate: { type: ['string', 'null'] },
         recordModifiedDate: { type: ['string', 'null'] },

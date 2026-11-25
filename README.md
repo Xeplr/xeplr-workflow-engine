@@ -37,6 +37,7 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 | `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey` (`opts.actor`: who answered), `resolveParams`, `collectParams`; admin `cancelRun(runId, { reason, actor })`, `retryRun(runId, { reason, actor })`; `pollStep(workflowId, stepKey)` — one check of a step that keeps checking ([below](#a-step-that-keeps-checking-workflow_stepspoll)) |
 | `tasks` | `lib/tasks.js`: `listMine(user, { limit, offset })`, `claim`, `release`, `answer(id, body, user)`, `reassign(id, { userId \| role }, { reason, actor })`, `sweepDue` ([Tasks](#tasks-and-approvals)) |
 | `recovery` | `lib/recovery.js`: the sweeper — `sweep()` runs one pass now; `startSweeping`, `stopSweeping` |
+| `waits` | `lib/waits.js`: `wakeDue()` — wakes every Wait step whose time, date or limit has come, and checks those waiting for a file or an email. Run by the sweep; a host with `recover: false` runs it from a job of its own ([Waiting](#waiting-the-wait-step)) |
 | `versions` | `lib/versions.js`: `stepsForRun(run)` (the steps a run reads), `pinVersion(workflowId, steps)` |
 | `flows` | `lib/flows.js`: the flows facade (list, create, put, publish, start, submit, runs) and `touchesScreens` |
 | `triggers`, `registerTrigger` | `lib/triggers.js`: what starts a workflow — the registry of kinds, `validate`, `emit`, the schedule `tick`, `describe` ([Triggers](#triggers-libtriggersjs)) |
@@ -55,14 +56,15 @@ engine/
 │  ├─ workflowRunner.js     startRun, resumeByKey, resolveParams, collectParams, recoverRun
 │  ├─ stepReport.js         a running step's progress, log lines and stop (system.onProgress / log / signal)
 │  ├─ versions.js           the steps a run reads: pinned when it starts
-│  ├─ recovery.js           the sweeper: runs whose process died, waits past their time, overdue tasks
+│  ├─ recovery.js           the sweeper: runs whose process died, waits past their time, overdue tasks, Wait steps due
+│  ├─ waits.js              wakes Wait steps: their time or date, an arrival, or "took too long"
 │  ├─ tasks.js              what people answer: inbox, claim, answer, approvals, reassign
 │  ├─ flows.js              the flows facade: screens as steps
 │  ├─ triggers.js           what starts a workflow: manual, api, schedule, job, and more
 │  ├─ jobs.js               jobs as steps (job-run) and as triggers (jobFinished)
 │  ├─ conditions.js         an arrow's `when` compiled into its condition
 │  ├─ actionCatalog.js      whitelist of @xeplr/actions built-ins + local actions (data-operation and export-table included)
-│  ├─ actions/              local actions: job-run, decide, remember, recall, screen-show, approval
+│  ├─ actions/              local actions: job-run, decide, remember, recall, screen-show, approval, wait
 │  ├─ envExposed.js         WORKFLOW_ENV_EXPOSED allowlist for {env.*}
 │  └─ db.js                 connectDb + model(name) bound to workflow's own connection
 ├─ db/xcfgSetup.js          shared @xeplr/actions attachConfig({ service: 'xeplr-workflow' })
@@ -102,6 +104,7 @@ Both run against workflow's own database:
 | `0014` | `workflows.trigger` (jsonb) — **what is supposed to start a run**, beside what comes in with it. One shape per kind: `{kind:'manual'}`, `{kind:'api'}`, `{kind:'schedule',cron}`, `{kind:'file',folder,named}`, `{kind:'email',mailbox,folder}`. NULL means "started however it is called", so every existing workflow behaves exactly as it did. **Nothing arms these yet** — the designer records the intent; the pollers and the hook endpoint read it when they land |
 
 | `0015`–`0018` | `workflows.trigger` state and `triggerData`, the after-job shortcut, `maxStepRuns` + `targetStepKey`, `workflow_memory` |
+| `0026` | **Waits.** `workflow_resume_keys.wakeAt`, `wakeOutput`, `watch`, `nextCheckAt` — when a Wait step wakes by itself and with what, and what it checks for ([below](#waiting-the-wait-step)); `workflow_trigger_states.seen`, `lastCheckedAt` — what a watch trigger already started runs for |
 | `0025` | `workflow_step_runs.progress` and `.log`: how far a running step has got (its action's newest numbers, and when) and its log lines, oldest first, the newest 300 — saved as it runs, at most every two seconds ([below](#a-running-step-says-how-far-it-has-got)) |
 | `0024` | `workflow_tasks.assigneeEmail`: an approver named by email address. Matched against the signed-in user's email; the inbox lists it to that person only |
 | `0023` | `workflow_steps.poll` (jsonb, `{ jobId }`): the step keeps checking, on that job's schedule ([below](#a-step-that-keeps-checking-workflow_stepspoll)). Null: it runs once |
@@ -330,6 +333,8 @@ the same deviation — and move on when enough of them have answered.
 | `api` | — | another system calls the run (nothing to arm) |
 | `schedule` | `cron` (`"0 9 * * 1"`), `timezone?` | when the cron expression is due |
 | `job` | `jobId`, `when`: `success` (default) \| `failed` \| `finished` | when that job finishes that way |
+| `file` | `folder`, `named?` (`*.csv`), `checkEveryMinutes?` (5) | **each new file** in the folder starts a run, with `{trigger.file}` (`name`, `path`, `size`, `modifiedAt`) |
+| `email` | the app's own mailbox; `fromContains?`, `subjectContains?`, `mailboxFolder?`, `checkEveryMinutes?` | **each new email** starts a run, with `{trigger.email}` |
 
 Every kind also takes `enabled: false`, which switches it off without losing it.
 
@@ -354,7 +359,10 @@ The same rules hold for every kind:
 - a time kind gives `due(trigger, from)`, its next due `Date`;
 - an event kind gives `matches(trigger, event)`, and the host calls `triggers.emit(kind, event)` when the event happens.
 
-Folder and mailbox watchers are next, as kinds of this registry.
+**Watching a folder or a mailbox** (`file`, `email`) runs on the same tick, claimed the same way, every `checkEveryMinutes`:
+- **Each new file or email starts a run of its own.** What was found is remembered on the trigger's state (`seen`, the newest 500), so a file left in the folder is not started again at the next look; it is remembered before its run starts, so a run that fails is not started twice.
+- **The first look only notes what is there.** Publishing never starts a run for every file that was already waiting.
+- **A look that fails** (the mailbox is down) is recorded as a skip with the reason, and the next look tries again.
 
 ## Conditions written simply (`lib/conditions.js`)
 
@@ -435,7 +443,30 @@ await jobs.init({ /* … */ onFinish: (report) => engine.jobFinished(report) });
 
 Migration 0016 repairs a database that ran 0015's first release, which left the key empty and the arrows without `when`. A single comparison gets its `when` back. A nested one still runs as before, and the jobs screen says it was changed elsewhere.
 
+## Waiting: the Wait step
+
+**One step for every wait that is not a person's task** (`lib/actions/wait.js`, action `wait`). It asks one question, "Wait until …", with three answers:
+
+| `until` | settings | ends when |
+|---|---|---|
+| `time` | `amount`, `unit` (`minutes` / `hours` / `days`) | that long has passed. Output `{ waited: true }` |
+| `date` | `date` — a value from an earlier step or typed (`2026-12-01` is midnight that day on the server's clock) | that moment has come (one already past: at the next pass) |
+| `arrival` | `arrives`: `reply`, `file` (`folder`, `named?`) or `email` (the app's own mailbox; `fromContains?`, `subjectContains?`) | it arrives. Output `{ arrived: true, files \| messages }`, or for a reply what was sent with it |
+
+For something arriving, one optional limit: **`tooLongAmount` + `tooLongUnit`** ("if it takes longer than 3 days"). Past it the wait ends with `{ tooLong: true }`, so an arrow of its own (`output.tooLong = true`, drawn as "Took too long") can send a reminder and come back to the Wait.
+
+- **A reply** is sent to the step's own address (`POST /public/resume/<key>` in `@xeplr/workflow-api`), shown on the step as `output.replyLink` while it waits.
+- **A file or an email is checked every `checkEveryMinutes` (5)** while the run waits. Only mail that came in after the wait began counts; a file counts if it is in the folder. The run goes on with what arrived.
+- **A person's task is not waited for here.** An approval or a screen has its own lateness (due dates); one place for "a person is late", not two.
+- **It is always a wait step:** saved as `auto`, the model makes it `wait`.
+
+**How it wakes.** The step writes on its resume key when to wake (`wakeAt` and `wakeOutput`) and what to check (`watch`, `nextCheckAt`), and the run parks as every wait does. `waits.wakeDue()` answers due keys and runs due checks, each through `resumeByKey`, which spends the key in one transaction: a wait is woken once, however many processes sweep, and an arrival and its "too long" cannot both win. A check is claimed by moving `nextCheckAt` forward with a conditional update, so two processes check once. **It adds no timer:** `wakeDue()` runs inside the sweep that already finds runs nobody is moving (every 30 s). A host that turns the sweep off calls `engine.waits.wakeDue()` from a scheduled job. A wait outlives the process that parked it: everything is on its key.
+
+The older ways stay for code that uses them: a step's `timeoutMs` (a wait that fails as `TIMED_OUT`) and a step that keeps checking (below). A designer offers the Wait step and the `file` / `email` triggers instead.
+
 ## A step that keeps checking (`workflow_steps.poll`)
+
+*Superseded for new designs by the `file` and `email` triggers (a run per arrival) and the Wait step (this run waits for one).*
 
 Any step can be made to keep checking: a folder (`file-list`), a mailbox
 (`email-read`), a table (`db-fetch`). How often is a **job's** schedule — the
@@ -480,6 +511,7 @@ npm test          # node test/run.mjs — each *.test.mjs in its own process
 - migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
 - migration 0016 repairing one converted early, and changing nothing on a second run |
 | `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered; the file steps offered, `file-delete` among them; `workflow-poll` registered but hidden |
+| `waits.test.mjs` | On a real Postgres, with real files: waiting some time (parked, not woken early, woken once it passed); until a date (past wakes, ahead stays, a bare day is midnight, an unreadable one fails saying so); a file arriving in time taking the normal arrow with the file, nothing in time taking "Took too long", the run that got its file not woken again; **a wait woken by another process, and two processes at the same instant running the next step once**; a step saved as `auto` parking anyway; the `file` trigger noting what was there, starting one run per new file with `{trigger.file}`, starting none for the same files again, and refusing a trigger with no folder |
 | `stepProgress.test.mjs` | On a real Postgres: a step's numbers and log readable from outside while it runs, and the last of them once it ends, in order; a hundred reports written as the newest only; a cancel stopping the step part-way and the case ending `CANCELLED`; a cancel written by another process stopping it at its next report |
 | `polling.test.mjs` | On a real Postgres: a run parking on a step that keeps checking, the step not run on arrival; a tick finding nothing starting nothing and recording the check; each find a run of its own, with what was found and the earlier steps' outputs, linked to the listening run, which keeps waiting; a failed check recorded while it keeps listening; cancelling stopping it; an `each` arrow giving a run per file; what counts as found, and an action's own rule; a step that does not poll versioned as before |
 | `runningSafely.test.mjs` | On a real Postgres: a loop stopped at `maxStepRuns`; a failure routed by its arrows with its error readable; an `each` arrow never past its limit, joining once; children that paused and were resumed still letting the parent join; `job-run` waiting for a busy job, failing at once with `whenBusy: fail`, and giving up after `busyWaitMinutes` |

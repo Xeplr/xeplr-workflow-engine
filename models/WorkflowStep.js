@@ -59,12 +59,22 @@ class WorkflowStep extends BaseModel {
     super.$beforeInsert();
     if (!this.kind) this.kind = 'auto';
     if (!this.onError) this.onError = 'stop';
+    this.waitsAlways();
     this.compileWhen();
   }
 
   $beforeUpdate(opt, ctx) {
     super.$beforeUpdate(opt, ctx);
+    this.waitsAlways();
     this.compileWhen();
+  }
+
+  // A WAIT STEP PARKS, whatever it was saved as: the whole point of the
+  // `wait` action is that the run stops there until it wakes
+  // (lib/actions/wait.js). Saved as 'auto' it would run, find no resume key
+  // and fail, so the kind is the action's to decide, not the designer's.
+  waitsAlways() {
+    if (this.actionName === 'wait') this.kind = 'wait';
   }
 
   // An arrow written as `when` ({ field, op, value }) gets its engine
