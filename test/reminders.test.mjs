@@ -140,7 +140,14 @@ try {
     check('...both inboxes show it', (await tasks.listMine(RAVI)).tasks.some((t) => t.id === t1.id) && (await tasks.listMine(PLANT)).tasks.some((t) => t.id === t1.id))
     check('...nothing left to send', t1c.nextNudgeAt === null)
     await tasks.answer(t1.id, { decision: 'approved' }, PLANT)
-    check('...and the Plant Head can answer it', (await Run.query().findById(r1.id)).status === 'success')
+    const done1 = await Run.query().findById(r1.id)
+    check('...and the Plant Head can answer it', done1.status === 'success')
+
+    console.log('\na run\'s times are instants (0028), on a server in India')
+    const startedAgo = Date.now() - new Date(done1.startedAt).getTime()
+    check('it started moments ago, not 5½ hours ago', startedAgo >= 0 && startedAgo < 5 * 60000, { startedAt: done1.startedAt, startedAgo })
+    check('...and took seconds, not "5 h 31 min"', done1.durationMs >= 0 && done1.durationMs < 5 * 60000 &&
+      new Date(done1.finishedAt).getTime() - new Date(done1.startedAt).getTime() === done1.durationMs, { durationMs: done1.durationMs, startedAt: done1.startedAt, finishedAt: done1.finishedAt })
 
     console.log('\nan answered task is never reminded')
     const r2 = await start(wf)
