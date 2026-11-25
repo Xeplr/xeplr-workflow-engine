@@ -2,9 +2,11 @@
 //
 // Triggers on a real Postgres, with the real @xeplr/jobs: ordinary workflows
 // started by a job finishing (and running jobs as steps, the period flowing
-// on), by a schedule, and never when switched off or still a draft. Wired as
-// a host wires it — jobs' onFinish → engine.jobFinished, the engine's
-// startJob → jobs.trigger — in this one process. Also: the 0015 migration
+// on), by a schedule — which is a job, fired by the real jobs scheduler, and
+// paused on the Jobs side — and never when switched off or still a draft.
+// Wired as a host wires it — jobs' onFinish → engine.jobFinished, the
+// engine's startJob → jobs.trigger, keepSchedule → jobs.keepSchedule, the
+// engine's jobActions registered with jobs — in this one process. Also: the 0015 migration
 // turning an old "job-chain" workflow into an ordinary one that still runs.
 //
 // Needs WORKFLOW_TEST_PG = '{"host":"localhost","port":5432,"user":"…","password":"…"}'.
@@ -48,6 +50,7 @@ jobs.registerAction({
   inputSchema: [{ name: 'label', type: 'string' }, { name: 'n', type: 'number' }, { name: 'region', type: 'string' }, { name: 'window', type: 'object' }],
   execute: async (ctx) => { ran.push({ job: ctx.input.label, input: ctx.input }); return { totalRows: ctx.input.n || 0, region: ctx.input.region || null } }
 })
+engine.jobActions.forEach((a) => jobs.registerAction(a))
 jobs.registerAction({
   name: 'wf-trig-fail',
   inputSchema: [{ name: 'label', type: 'string' }],
@@ -65,9 +68,7 @@ await engine.startEngine({
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
   },
   startJob: (jobId, body) => jobs.trigger(jobId, body, { triggerType: 'workflow' }),
-  // The tick is driven by hand below (triggers.tick(now)), so its timing is
-  // the test's, not a timer's.
-  schedule: false
+  keepSchedule: jobs.keepSchedule
 })
 const { Job, JobOccurrence } = jobs.boundModels()
 const Workflow = engine.db.model('Workflow')
@@ -118,6 +119,7 @@ try {
       [{ kind: 'job', jobId: A.id, when: 'sometimes' }, /`when` must be one of success, failed, finished/],
       [{ kind: 'schedule' }, /needs `cron`/],
       [{ kind: 'schedule', cron: 'every tuesday' }, /is not a cron expression/],
+      [{ kind: 'schedule', cron: '0 9 * * 1', timezone: 'Mars/Olympus' }, /"Mars\/Olympus" is not a time zone/],
       ['schedule', /must be object/]
     ]
     for (const [t, msg] of bad) {
@@ -197,27 +199,70 @@ try {
     const st = await triggers.describe(needs)
     check('the job still finished; the skip names the missing parameter', fin.started.some((s) => s.workflowId === needs.id && !s.fired) && /customerId/.test(st.lastSkipReason || ''), st)
 
-    console.log('\na schedule')
-    const T0 = new Date('2030-01-07T08:59:00Z')
-    const sched = await workflow('Mondays 9', { kind: 'schedule', cron: '0 9 * * 1', timezone: 'UTC' },
-      [{ stepKey: 'decide', name: 'Decide', actionName: 'decide', transitions: [otherwise('end_success')] }])
-    const offSched = await workflow('Off schedule', { kind: 'schedule', cron: '* * * * *', enabled: false },
-      [{ stepKey: 'decide', name: 'Decide', actionName: 'decide', transitions: [otherwise('end_success')] }])
-    const first = await triggers.tick(T0)
-    check('first seen: given its next time, nothing fired', first.length === 0 && (await triggers.describe(sched)).nextDueAt && new Date((await triggers.describe(sched)).nextDueAt).toISOString() === '2030-01-07T09:00:00.000Z', await triggers.describe(sched))
-    check('not due yet: nothing', (await triggers.tick(new Date('2030-01-07T08:59:30Z'))).length === 0)
-    const due = new Date('2030-01-07T09:00:10Z')
-    const both = await Promise.all([triggers.tick(due), triggers.tick(due)])
-    const firedNow = both.flat().filter((f) => f.workflowId === sched.id && f.fired)
-    check('due: two ticks at once start it once', firedNow.length === 1, both)
+    console.log('\na schedule is a job, and the jobs scheduler starts it')
+    const decideOnly = [{ stepKey: 'decide', name: 'Decide', actionName: 'decide', transitions: [otherwise('end_success')] }]
+    const sched = await workflow('Mondays 9', { kind: 'schedule', cron: '0 9 * * 1', timezone: 'Asia/Kolkata', period: 'previous-month' }, decideOnly)
+    const offSched = await workflow('Off schedule', { kind: 'schedule', cron: '* * * * *', enabled: false }, decideOnly)
+    const draftSched = await workflow('Draft schedule', { kind: 'schedule', cron: '* * * * *' }, decideOnly, { status: 'draft' })
+    const sJob = await Job.query().findById(sched.id)
+    check('saving it made its job, in its company, with its cron and zone', sJob && sJob.actionName === 'workflow-scheduled' &&
+      sJob.schedule === '0 9 * * 1' && sJob.timezone === 'Asia/Kolkata' && sJob.status === 'ready' && sJob.mtId1 === MT.mtId1 &&
+      sJob.inputs.workflowId === sched.id && /Mondays 9/.test(sJob.name), sJob)
+    const at = new Date(sJob.nextRunAt)
+    check('...next due at 9:00 in Kolkata (03:30 UTC) on a Monday', at.getUTCDay() === 1 && at.getUTCHours() === 3 && at.getUTCMinutes() === 30, sJob.nextRunAt)
+    check('switched off, or a draft: no job', !(await Job.query().findById(offSched.id)) && !(await Job.query().findById(draftSched.id)))
+    const sys = await Job.query().findById('workflow-due')
+    check('the engine\'s due work is a system job of every company, every minute', sys && sys.system === true && sys.mtId1 === '*' &&
+      sys.schedule === '* * * * *' && sys.actionName === 'workflow-due', sys)
+
+    // Due on a past Monday at 9:00 Kolkata: the real scheduler picks it.
+    const due = '2026-11-02T03:30:00.000Z'
+    await jobsConn('jobs').where({ id: sched.id }).update({ nextRunAt: due })
+    jobs.startScheduler({ intervalMs: 150 })
     const sRun = await runOf(sched.id, 'success')
-    check('...with its due time as triggerData', sRun && sRun.trigger === 'schedule' && sRun.triggerData.dueAt === '2030-01-07T09:00:00.000Z', sRun && sRun.triggerData)
-    check('...and the next Monday as its next time', new Date((await triggers.describe(sched)).nextDueAt).toISOString() === '2030-01-14T09:00:00.000Z')
-    check('a schedule switched off never fires', (await runsOf(offSched.id)).length === 0)
-    await Workflow.query().findById(sched.id).patch({ trigger: { kind: 'schedule', cron: '30 9 * * 1', timezone: 'UTC' } })
-    const changed = await triggers.tick(new Date('2030-01-14T09:10:00Z'))
-    check('a changed schedule gets a fresh time instead of firing on the old one', changed.length === 0 &&
-      new Date((await triggers.describe(await Workflow.query().findById(sched.id))).nextDueAt).toISOString() === '2030-01-14T09:30:00.000Z')
+    check('the job started the workflow, as a schedule, for the slot it was due at', sRun && sRun.trigger === 'schedule' && sRun.triggerData.dueAt === due, sRun && sRun.triggerData)
+    check('...with the month before, in Kolkata', sRun && same(sRun.triggerData.window, { from: '2026-09-30T18:30:00.000Z', to: '2026-10-31T18:30:00.000Z' }), sRun && sRun.triggerData.window)
+    const sOcc = await until(async () => { const o = await JobOccurrence.query().where({ jobId: sched.id }).first(); return o && o.status === 'success' ? o : null })
+    check('...and the Jobs screen has the run, naming the workflow run', sOcc && sOcc.output.runId === sRun.id && sOcc.triggeredBy.type === 'cron', sOcc)
+    check('its trigger says when it last fired', (await triggers.describe(sched)).lastRunId === sRun.id)
+
+    console.log('\npausing the job pauses the workflow')
+    await Job.query().findById(sched.id).patch({ status: 'pause' })
+    await jobsConn('jobs').where({ id: sched.id }).update({ nextRunAt: new Date(Date.now() - 1000).toISOString() })
+    await sleep(900)
+    check('paused: due, and not started', (await runsOf(sched.id)).length === 1)
+    await Workflow.query().findById(sched.id).patch({ name: 'Mondays 9 (renamed)', trigger: { kind: 'schedule', cron: '0 9 * * 1', timezone: 'Asia/Kolkata', period: 'previous-month' } })
+    const kept = await Job.query().findById(sched.id)
+    check('saving the workflow again keeps it paused, under its new name', kept.status === 'pause' && /renamed/.test(kept.name), kept)
+    await Job.query().findById(sched.id).patch({ status: 'ready', nextRunAt: new Date(Date.now() - 1000).toISOString() })
+    check('resumed: it starts again', Boolean(await until(async () => (await runsOf(sched.id)).length === 2)))
+
+    console.log('\nthe job follows the workflow')
+    await Workflow.query().findById(sched.id).patch({ trigger: { kind: 'schedule', cron: '15 6 * * *', timezone: 'Europe/London' } })
+    const moved = await Job.query().findById(sched.id)
+    check('a new cron and zone move its job', moved.schedule === '15 6 * * *' && moved.timezone === 'Europe/London' && new Date(moved.nextRunAt).getUTCMinutes() === 15, moved)
+    await Workflow.query().findById(sched.id).patch({ status: 'draft' })
+    check('back to draft: its job is gone', !(await Job.query().findById(sched.id)))
+    await Workflow.query().findById(sched.id).patch({ status: 'published' })
+    check('published again: back', Boolean(await Job.query().findById(sched.id)))
+    await Workflow.query().findById(sched.id).patch({ trigger: { kind: 'schedule', cron: '15 6 * * *', enabled: false } })
+    check('switched off: gone', !(await Job.query().findById(sched.id)))
+    await Workflow.query().findById(sched.id).patch({ trigger: { kind: 'schedule', cron: '15 6 * * *' } })
+    await Workflow.query().findById(sched.id).patch({ trigger: { kind: 'manual' } })
+    check('changed to "someone presses Start": gone', !(await Job.query().findById(sched.id)))
+    await Workflow.query().findById(sched.id).patch({ trigger: { kind: 'schedule', cron: '15 6 * * *' } })
+    await Workflow.query().findById(sched.id).patch({ isActive: false })
+    check('deleted: gone', !(await Job.query().findById(sched.id)))
+    const hard = await workflow('Gone for good', { kind: 'schedule', cron: '0 1 * * *' }, [])
+    await Workflow.query().deleteById(hard.id)
+    check('removed outright: gone', !(await Job.query().findById(hard.id)))
+    jobs.stopScheduler()
+
+    console.log('\nwithout jobs connected, a schedule cannot be saved')
+    engine.jobs.setScheduleKeeper(null)
+    const noClock = await refusal(Workflow.query().insert({ id: generateId(), name: 'no clock', trigger: { kind: 'schedule', cron: '0 9 * * 1' } }))
+    check('refused, saying what is missing', noClock && noClock.status === 400 && /jobs scheduler/.test(noClock.message), noClock && noClock.message)
+    engine.jobs.setScheduleKeeper(jobs.keepSchedule)
 
     console.log('\nan old job chain becomes an ordinary workflow (migration 0015)')
     const oldId = generateId()
@@ -277,7 +322,6 @@ try {
 } catch (err) {
   check('no error', false, err.stack || err.message)
 } finally {
-  triggers.stopTicking()
   jobs.stopScheduler()
   await sleep(200)
   await jobsConn.destroy().catch(() => {})

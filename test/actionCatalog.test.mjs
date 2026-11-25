@@ -72,6 +72,10 @@ console.log('\noffered: a screen step, now that a host can answer one')
     shown.inputSchema.find((f) => f.name === 'buttons').type === 'string')
   check('one is hidden: the job action of a step that keeps checking, never a step itself', catalog.HIDDEN.length === 1 &&
     catalog.HIDDEN[0].name === 'workflow-poll' && !names.includes('workflow-poll'))
+  require('../lib/schedules.js').jobActions.forEach((a) => actions.register(a))
+  const withJobs = catalog.catalog().map((r) => r.name)
+  check('the jobs\' own actions, registered by a host, are never offered as steps',
+    actions.has('workflow-scheduled') && actions.has('workflow-due') && !withJobs.includes('workflow-scheduled') && !withJobs.includes('workflow-due'))
   check('decide (a step that only branches) is offered', names.includes('decide'))
   check('the file steps are offered, delete among them', ['file-list', 'file-read', 'file-move', 'file-delete'].every((n) => names.includes(n)))
   check('no job-chain actions are left', !names.some((n) => /^job-chain/.test(n)))
@@ -90,8 +94,8 @@ console.log('\nregistering twice')
 console.log('\nwhat the UI is handed')
 {
   const rows = catalog.catalog()
-  check('one row per registered action, less the hidden ones',
-    rows.length === actions.list().length - catalog.HIDDEN.length)
+  check('one row per registered action, less the hidden ones and the jobs\' own two',
+    rows.length === actions.list().length - catalog.HIDDEN.length - 2)
   check('each has a name', rows.every((r) => typeof r.name === 'string' && r.name))
   // THE SCHEMA IS THE POINT — see the note in actionCatalog.js.
   check('each carries its input schema', rows.every((r) => Array.isArray(r.inputSchema)))

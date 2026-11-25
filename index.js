@@ -9,6 +9,7 @@ var flows = require('./lib/flows');
 var jobs = require('./lib/jobs');
 var triggers = require('./lib/triggers');
 var recovery = require('./lib/recovery');
+var schedules = require('./lib/schedules');
 var versions = require('./lib/versions');
 var tasks = require('./lib/tasks');
 var xcfgSetup = require('./db/xcfgSetup');
@@ -50,15 +51,15 @@ var TENANT_MIGRATIONS_DIR = path.join(__dirname, 'migrations-tenants');
  *   `connectionInfoId` and never a password; the login exists only in the
  *   call to the action (@xeplr/actions' resolveConnections). The same
  *   function a host gives @xeplr/jobs.
- * @param {boolean} [config.schedule=true] - false: do not run the schedule
- *   tick in this process (lib/triggers.js). Two processes may both run it —
- *   a due trigger is claimed, so it starts once — but one is enough.
- * @param {number} [config.scheduleIntervalMs=30000] - how often it looks.
- * @param {boolean} [config.recover=true] - false: do not run the sweeper in
- *   this process (lib/recovery.js). It picks up runs whose process died
- *   mid-step and fails waits past their timeoutMs. Several processes may run
- *   it; a run is taken by one.
- * @param {number} [config.recoverIntervalMs=30000] - how often it looks.
+ * @param {Function} [config.keepSchedule] - async (id, spec | null, { system }?)
+ *   → the job: how this host keeps a schedule as a job. With @xeplr/jobs in
+ *   the same process, `jobs.keepSchedule`. THE ENGINE HAS NO CLOCK: a workflow
+ *   "On a schedule" is a job that starts it, and the engine's due work (Wait
+ *   boxes, reminders, watches, crash recovery) is the system job
+ *   `workflow-due`, kept here on start (lib/schedules.js). The host also
+ *   registers `jobActions` with its jobs, in every process that runs jobs.
+ *   Unset, a schedule trigger is refused on save and nothing is due-checked:
+ *   pass it in the process that serves the API.
  * @param {Function} [config.onTask] - (event, task) → void: told when a task
  *   opens ('created'), passes its dueAt ('due'), is escalated ('escalated') or
  *   reassigned ('reassigned'), so the host can notify people. The engine knows
@@ -206,15 +207,17 @@ async function startEngine(config) {
   // secret is only catchable if it is visible somewhere.
   envExposed.logExposure();
 
-  // Scheduled workflows start themselves from here on. The timer does not
-  // keep the process alive.
-  if (config.schedule !== false) triggers.startTicking(config.scheduleIntervalMs);
-
-  // Runs whose process died, and waits past their time, are found from here
-  // on. Also a timer that does not keep the process alive.
   if (config.lease) workflowRunner.setLeaseTiming(config.lease);
   if (config.onTask !== undefined) tasks.setTaskHook(config.onTask);
-  if (config.recover !== false) recovery.startSweeping(config.recoverIntervalMs);
+
+  // NO TIMER HERE. The jobs scheduler is the one clock: schedules are jobs,
+  // and the due work is the system job kept now (idempotent — every start
+  // keeps it, nobody can change it from the screen).
+  if (config.keepSchedule !== undefined) jobs.setScheduleKeeper(config.keepSchedule);
+  if (jobs.scheduleKeeper()) {
+    await schedules.keepDueJob();
+    console.log('[workflow] due work runs as the job "' + schedules.DUE_JOB.id + '", every minute');
+  }
 }
 
 // Env vars a HOST embedding workflow must supply — spread into the host's
@@ -321,7 +324,7 @@ module.exports = {
   runner: workflowRunner,
   flows: flows,
   // What starts a workflow: the registry of kinds (manual, api, schedule,
-  // job — and a host's own via registerTrigger), the schedule tick, and what
+  // job — and a host's own via registerTrigger), the watch check, and what
   // a trigger last did.
   triggers: triggers,
   registerTrigger: triggers.registerTrigger,
@@ -330,9 +333,15 @@ module.exports = {
   // triggers and resumes the step that started it.
   jobs: jobs,
   jobFinished: jobs.jobFinished,
+  // Jobs as the clock (lib/schedules.js): the two actions a host registers
+  // with its jobs — `workflow-scheduled` (starts a workflow on its schedule)
+  // and `workflow-due` (sweep(), every minute) — and the system job's spec.
+  schedules: schedules,
+  jobActions: schedules.jobActions,
   // An arrow's `when` ({ field, op, value }) → the engine's condition node.
   conditions: require('./lib/conditions'),
-  // The sweeper (sweep() runs one pass now) and the steps a run reads.
+  // The due work (sweep() runs one pass now — the system job calls it) and the
+  // steps a run reads.
   recovery: recovery,
   // A Wait step's wake-ups (lib/waits.js): wakeDue() — run by the sweep, or
   // by a host's own job when the sweep is off.

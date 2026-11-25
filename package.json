@@ -53,7 +53,7 @@
   },
   "devDependencies": {
     "@xeplr/actions": "^2.2.0",
-    "@xeplr/jobs": "^2.3.0",
+    "@xeplr/jobs": "^3.1.0",
     "knex": "^3.3.0"
   },
   "dependencies": {

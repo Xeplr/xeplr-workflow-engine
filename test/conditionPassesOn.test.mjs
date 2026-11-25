@@ -34,8 +34,7 @@ actions.register({ name: 'cp-note', inputSchema: [{ name: 'what', type: 'string'
 
 await engine.startEngine({
   db: { name: WF_DB, connection: PG, connectionName: 'workflow_condition_test',
-    mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } } },
-  schedule: false
+    mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } } }
 })
 const Workflow = engine.db.model('Workflow')
 const Step = engine.db.model('WorkflowStep')

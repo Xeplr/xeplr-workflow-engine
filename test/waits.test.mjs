@@ -42,8 +42,7 @@ await engine.startEngine({
   db: {
     name: WF_DB, connection: PG, connectionName: 'workflow_waits_test',
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
-  },
-  schedule: false, recover: false
+  }
 })
 const Workflow = engine.db.model('Workflow')
 const Step = engine.db.model('WorkflowStep')
@@ -171,7 +170,7 @@ try {
     wfId = w.id
   })
   const t0 = new Date()
-  await engine.triggers.tick(t0)
+  await engine.triggers.checkWatches(t0)
   const runsOf = () => runWithMt(MT, () => Run.query().where({ workflowId: wfId }))
   check('the first look notes what is there and starts nothing', (await runsOf()).length === 0)
   await runWithMt(MT, async () => {
@@ -180,11 +179,11 @@ try {
     writeFileSync(path.join(drop, 'oct.csv'), 'c')
     writeFileSync(path.join(drop, 'notes.txt'), 'x')
   })
-  await engine.triggers.tick(new Date(t0.getTime() + 61000))
+  await engine.triggers.checkWatches(new Date(t0.getTime() + 61000))
   const after = await runsOf()
   const names = after.map((r) => r.triggerData && r.triggerData.file && r.triggerData.file.name).sort()
   check('each new file starts one run, with {trigger.file}', after.length === 2 && names.join() === 'oct.csv,sept.csv', after.map((r) => r.triggerData))
-  await engine.triggers.tick(new Date(t0.getTime() + 122000))
+  await engine.triggers.checkWatches(new Date(t0.getTime() + 122000))
   check('a second look starts none for the same files', (await runsOf()).length === 2)
   const desc = await runWithMt(MT, async () => engine.triggers.describe(await Workflow.query().findById(wfId)))
   check('...and the trigger says when it last looked', desc.on === true && desc.lastFiredAt, desc)
