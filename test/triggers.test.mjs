@@ -273,7 +273,7 @@ try {
   const res = await require('@xeplr/actions').runAction({ name: 'job-run', input: { jobId: 'j1' }, system: { runId: 'r', stepId: 's' } })
   check('a job-run step with no starter and no URL fails, saying what is missing', res.status === 'failed' && /WORKFLOW_PUBLIC_URL/.test(res.error.message), res.error)
   check('decide does nothing', JSON.stringify(await require('../lib/actions/decide').execute()) === '{}')
-  check('the kinds on offer', same(triggers.kinds(), ['manual', 'api', 'schedule', 'job']))
+  check('the kinds on offer', same(triggers.kinds(), ['manual', 'api', 'schedule', 'job', 'file', 'email']))
 } catch (err) {
   check('no error', false, err.stack || err.message)
 } finally {
