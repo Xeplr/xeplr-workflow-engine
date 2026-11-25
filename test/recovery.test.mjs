@@ -46,8 +46,7 @@ await engine.startEngine({
   db: {
     name: WF_DB, connection: PG, connectionName: 'workflow_recovery_test',
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
-  },
-  schedule: false, recover: false
+  }
 })
 const Workflow = engine.db.model('Workflow')
 const Step = engine.db.model('WorkflowStep')

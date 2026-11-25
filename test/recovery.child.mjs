@@ -23,7 +23,7 @@ await engine.startEngine({
     name: process.env.RC_DB, connection: PG, connectionName: 'workflow_recovery_child',
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
   },
-  migrate: false, schedule: false, recover: false,
+  migrate: false,
   lease: { leaseMs: 600, renewMs: 150 }
 })
 // A hung promise holds nothing open by itself; this does, until the kill.

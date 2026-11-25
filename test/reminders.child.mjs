@@ -14,7 +14,7 @@ await engine.startEngine({
     name: process.env.WT_DB, connection: JSON.parse(process.env.WT_PG), connectionName: 'workflow_reminders_child_' + process.pid,
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
   },
-  migrate: false, schedule: false, recover: false,
+  migrate: false,
   onTask: (event, task, info) => { told.push({ event, taskId: task.id, info }) }
 })
 const at = Number(process.env.WT_AT || 0)

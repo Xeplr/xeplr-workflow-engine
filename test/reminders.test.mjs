@@ -43,7 +43,6 @@ await engine.startEngine({
     name: WF_DB, connection: PG, connectionName: 'workflow_reminders_test',
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
   },
-  schedule: false, recover: false,
   onTask: (event, task, info) => { told.push({ event, taskId: task.id, info }) }
 })
 const Workflow = engine.db.model('Workflow')

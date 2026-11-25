@@ -13,8 +13,13 @@ npm install @xeplr/workflow-engine
 ```js
 var engine = require('@xeplr/workflow-engine');
 
+var jobs = require('@xeplr/jobs');
+
+engine.jobActions.forEach(jobs.registerAction);   // in every process that runs jobs
 await engine.startEngine({
-  db: { name: 'xeplr_bi_workflow', connection: conn, connectionName: 'workflow' }
+  db: { name: 'xeplr_bi_workflow', connection: conn, connectionName: 'workflow' },
+  startJob: (jobId, body) => jobs.trigger(jobId, body),
+  keepSchedule: jobs.keepSchedule                  // the engine's clock — see below
 });
 var run = await engine.runner.startRun(workflowId, params, { user });
 await engine.resumeByKey(key, { confirmedBy: userId });
@@ -22,13 +27,15 @@ await engine.resumeByKey(key, { confirmedBy: userId });
 
 Most hosts never call this directly: the API's `registerWorkflow()` calls `startEngine()` first and passes `resumeByKey` and the env lists through.
 
+**The engine runs no timer of its own** ([The clock is @xeplr/jobs](#the-clock-is-xeplrjobs-libschedulesjs)). A workflow "On a schedule" is a job, and everything that falls due with time — Wait boxes, reminders and escalations, file and email watches, runs whose process died — is one system job of `@xeplr/jobs`, every minute. A host without `keepSchedule` cannot save a schedule, and nothing in it is due-checked: give it `@xeplr/jobs`.
+
 The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-handler`, `utils`) are **peer dependencies**. The host supplies them, so the engine reads the same tenant context and the same action registry as the host. Two copies of `@xeplr/db` would mean two tenant contexts, and a run started in one would not see the other's company.
 
 ## Exports (`index.js`)
 
 | Export | Purpose |
 |---|---|
-| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `schedule` (`false`: no schedule tick in this process), `scheduleIntervalMs` (default 30000), `onTask` (`(event, task, info)`: told when a task opens (`'created'`), is due a reminder (`'reminder'`, info `{ by, waited }`), is escalated (`'escalated'`, info `{ from, to, keep, waited }`) or reassigned, so the host notifies people — see [Reminders and escalation](#reminders-and-escalation)), `recover` (`false`: no sweeper in this process — [Surviving a crash](#surviving-a-crash-and-a-design-edit)), `recoverIntervalMs` (default 30000), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
+| `startEngine(config)` | Connect workflow's database (creating it if missing), run its migrations, ready `xeplr_configs`, register the action catalog. Idempotent. `config.db` is required; throws if no application id is registered. Config: `db` (`{ name, connection, connectionName?, mts?, migrationsTable? }`), `applicationId`, `tenantTables`, `migrations`, `migrate` (`false`: connect without migrating — a second process of an install whose API migrates), `startJob` (below), `keepSchedule` (`jobs.keepSchedule`: how a schedule becomes a job, and the system job of the due work, kept on every start — [below](#the-clock-is-xeplrjobs-libschedulesjs)), `onTask` (`(event, task, info)`: told when a task opens (`'created'`), is due a reminder (`'reminder'`, info `{ by, waited }`), is escalated (`'escalated'`, info `{ from, to, keep, waited }`) or reassigned, so the host notifies people — see [Reminders and escalation](#reminders-and-escalation); pass it in **every** process that runs jobs, because the due work runs wherever the jobs scheduler picks it), `lease` (`{ leaseMs, renewMs }`, default 2 min / 30 s) |
 | `resumeByKey(key, output?, opts?)` | Server-side, in-process resume of a run parked on a `wait` step. `opts.status: 'failed'` resolves the step as failed. Throws `err.code` `RESUME_KEY_INVALID` (used/unknown, normal for host routes) or `RESUME_KEY_NOT_READY` (step still running; nothing consumed, retry) |
 | `embedRequiredEnv` | `['DB_WORKFLOW']`, spread into a host's `env.required.js`. Spread `@xeplr/actions`' `requiredEnv` too (`XEPLR_DATA_DIR`): a step's files are kept in the run's tenant folder under it, and a file step refuses to run without it |
 | `callbackRequiredEnv` | `['WORKFLOW_PUBLIC_URL']`, only for hosts using steps that call out (`job-run`) |
@@ -36,11 +43,12 @@ The shared `@xeplr/*` libraries (`actions`, `db`, `expression-handler`, `schema-
 | `db` | `connectDb`, with `.model(name)` bound to workflow's own connection |
 | `runner` | `lib/workflowRunner.js`: `startRun`, `resumeByKey` (`opts.actor`: who answered), `resolveParams`, `collectParams`; admin `cancelRun(runId, { reason, actor })`, `retryRun(runId, { reason, actor })`; `pollStep(workflowId, stepKey)` — one check of a step that keeps checking ([below](#a-step-that-keeps-checking-workflow_stepspoll)) |
 | `tasks` | `lib/tasks.js`: `listMine(user, { limit, offset })`, `claim`, `release`, `answer(id, body, user)`, `reassign(id, { userId \| role }, { reason, actor })`, `sweepDue` ([Tasks](#tasks-and-approvals)) |
-| `recovery` | `lib/recovery.js`: the sweeper — `sweep()` runs one pass now; `startSweeping`, `stopSweeping` |
-| `waits` | `lib/waits.js`: `wakeDue()` — wakes every Wait step whose time, date or limit has come, and checks those waiting for a file or an email. Run by the sweep; a host with `recover: false` runs it from a job of its own ([Waiting](#waiting-the-wait-step)) |
+| `recovery` | `lib/recovery.js`: the due work — `sweep()` runs one pass now (the system job `workflow-due` calls it every minute). No loop. |
+| `schedules`, `jobActions` | `lib/schedules.js`: `jobActions` — the two actions a host registers with `@xeplr/jobs` (`workflow-scheduled`, `workflow-due`); `DUE_JOB`, `specFor(workflow)`, `sync(workflowId)` ([The clock](#the-clock-is-xeplrjobs-libschedulesjs)) |
+| `waits` | `lib/waits.js`: `wakeDue()` — wakes every Wait step whose time, date or limit has come, and checks those waiting for a file or an email. Run by the sweep ([Waiting](#waiting-the-wait-step)) |
 | `versions` | `lib/versions.js`: `stepsForRun(run)` (the steps a run reads), `pinVersion(workflowId, steps)` |
 | `flows` | `lib/flows.js`: the flows facade (list, create, put, publish, start, submit, runs) and `touchesScreens` |
-| `triggers`, `registerTrigger` | `lib/triggers.js`: what starts a workflow — the registry of kinds, `validate`, `emit`, the schedule `tick`, `describe` ([Triggers](#triggers-libtriggersjs)) |
+| `triggers`, `registerTrigger` | `lib/triggers.js`: what starts a workflow — the registry of kinds, `validate`, `emit`, `checkWatches` (the file and email watches, part of the sweep), `describe` ([Triggers](#triggers-libtriggersjs)) |
 | `conditions` | `lib/conditions.js`: `whenToCondition`, `compileTransitions` ([Conditions](#conditions-written-simply-libconditionsjs)) |
 | `jobs`, `jobFinished` | `lib/jobs.js`: jobs as steps and as triggers — `setJobStarter`, `jobFinished` ([Jobs](#jobs-as-steps-and-as-triggers-libjobsjs)) |
 | `actionCatalog`, `envExposed`, `xcfgSetup` | The action whitelist (and `allowRetry(names)`: a host's own actions that are safe to run again after a crash; `foundWhen(name, rule)` / `isFound(name, output)`: when a step that keeps checking found something), the `WORKFLOW_ENV_EXPOSED` allowlist, the shared `xeplr_configs` attachment |
@@ -56,7 +64,8 @@ engine/
 │  ├─ workflowRunner.js     startRun, resumeByKey, resolveParams, collectParams, recoverRun
 │  ├─ stepReport.js         a running step's progress, log lines and stop (system.onProgress / log / signal)
 │  ├─ versions.js           the steps a run reads: pinned when it starts
-│  ├─ recovery.js           the sweeper: runs whose process died, waits past their time, overdue tasks, Wait steps due
+│  ├─ recovery.js           sweep(), the due work: runs whose process died, waits past their time, overdue tasks, reminders, Wait steps, watches
+│  ├─ schedules.js          the clock is @xeplr/jobs: a schedule as a job, the due-work system job, their two actions
 │  ├─ waits.js              wakes Wait steps: their time or date, an arrival, or "took too long"
 │  ├─ tasks.js              what people answer: inbox, claim, answer, approvals, reassign
 │  ├─ flows.js              the flows facade: screens as steps
@@ -342,8 +351,8 @@ the same deviation — and move on when enough of them have answered.
 - **Whoever moves a run holds a lease** (`workflow_runs.lockedUntil`, 2 min,
   renewed every 30 s while a step works, on a timer that never keeps the process
   alive). A process that dies stops renewing.
-- **The sweeper** (`lib/recovery.js`, every 30 s; `recover: false` turns it off in
-  a process) takes a `running` run whose lease has passed — one process wins, by
+- **The sweep** (`lib/recovery.js`, run every minute by the system job
+  `workflow-due`) takes a `running` run whose lease has passed — one process wins, by
   an atomic conditional patch — and goes on from what the run last recorded:
   nothing yet → start it; a step finished but the next was never chosen → choose
   it (no step is repeated); a step mid-way → **run it again only if it is safe to**
@@ -372,7 +381,7 @@ the same deviation — and move on when enough of them have answered.
 |---|---|---|
 | `manual` | — | someone presses Start (nothing to arm) |
 | `api` | — | another system calls the run (nothing to arm) |
-| `schedule` | `cron` (`"0 9 * * 1"`), `timezone?` | when the cron expression is due |
+| `schedule` | `cron` (`"0 9 * * 1"`), `timezone?`, `period?` | when the cron expression is due — **a job of `@xeplr/jobs`** that starts it ([below](#the-clock-is-xeplrjobs-libschedulesjs)) |
 | `job` | `jobId`, `when`: `success` (default) \| `failed` \| `finished` | when that job finishes that way |
 | `file` | `folder`, `named?` (`*.csv`), `checkEveryMinutes?` (5) | **each new file** in the folder starts a run, with `{trigger.file}` (`name`, `path`, `size`, `modifiedAt`) |
 | `email` | the app's own mailbox; `fromContains?`, `subjectContains?`, `mailboxFolder?`, `checkEveryMinutes?` | **each new email** starts a run, with `{trigger.email}` |
@@ -386,9 +395,7 @@ The same rules hold for every kind:
 - **A run gets what fired it.** It is stored as `workflow_runs.triggerData` and read by bindings and by the conditions on arrows as `{trigger.*}`: a job's `{trigger.status}`, `{trigger.window.from}`, `{trigger.output.totalRows}`; a schedule's `{trigger.dueAt}`. A run started by hand has `{trigger.kind}` only.
 - **What it did is a row.** `workflow_trigger_states` keeps the last fire and its run, the next due time, and the last skip and why: a required parameter nobody supplies, a workflow with no steps. A workflow that cannot start is recorded and never thrown at the job that finished. `describe(workflow)` answers `{ trigger, on, lastFiredAt, lastRunId, lastSkippedAt, lastSkipReason, nextDueAt }`.
 
-**The schedule tick.** `startEngine` runs it every 30 s, on a timer that does not keep the process alive (`schedule: false` turns it off in a process). It reads every tenant's timed triggers and starts each run in its own workflow's tenant context.
-- A trigger seen for the first time, or whose settings changed, is given its next due time and does **not** fire, so publishing never starts a run for a time already past.
-- A due trigger is **claimed** by a conditional update of its due time, so two processes running the tick start it once.
+**A schedule is a job.** Saving the workflow keeps a job of `@xeplr/jobs` for it; the job starts the run ([The clock](#the-clock-is-xeplrjobs-libschedulesjs)). A job is due first at the next time its cron says, so publishing never starts a run for a time already past. A zone the server cannot read is refused on save, and so is any schedule when the host has not connected jobs.
 
 **A run for a period.** A schedule can say `period`: `previous-day`, `previous-month`, `previous-quarter`, `previous-year` or `current-month`. The run then has `{trigger.window.from}` (included) and `{trigger.window.to}` (not included), the shape a job hands on, worked out at midnight in the trigger's `timezone` (else the server's). The 1st of October in India gives September: `2026-08-31T18:30Z` to `2026-09-30T18:30Z`.
 
@@ -397,13 +404,33 @@ The same rules hold for every kind:
 **What a designer offers.** `triggers.catalog()` lists every kind as `{ kind, label, description, fields }`, where `fields` are the form's boxes (`{ name, label, placeholder?, help?, required?, options? }`). The API serves it at `GET /workflow/triggers`. A designer builds its trigger form from it, so it never offers a kind this engine refuses (one once offered "A file arrives", which no engine had).
 
 **A host's own kinds.** `registerTrigger(kind, { label?, description?, fields?, validate, due?, matches? })`:
-- a time kind gives `due(trigger, from)`, its next due `Date`;
+- a kind that looks every so often gives `due(trigger, from)`, its next look, and `check(trigger, state)` → `[{ key, data }]`, what is there now (each new key starts a run) — the sweep runs it;
 - an event kind gives `matches(trigger, event)`, and the host calls `triggers.emit(kind, event)` when the event happens.
 
-**Watching a folder or a mailbox** (`file`, `email`) runs on the same tick, claimed the same way, every `checkEveryMinutes`:
+**Watching a folder or a mailbox** (`file`, `email`) is part of the due work (`triggers.checkWatches`, inside `sweep()`), every `checkEveryMinutes`. A due look is **claimed** by a conditional update of its next time, so two processes look once:
 - **Each new file or email starts a run of its own.** What was found is remembered on the trigger's state (`seen`, the newest 500), so a file left in the folder is not started again at the next look; it is remembered before its run starts, so a run that fails is not started twice.
 - **The first look only notes what is there.** Publishing never starts a run for every file that was already waiting.
 - **A look that fails** (the mailbox is down) is recorded as a skip with the reason, and the next look tries again.
+
+## The clock is @xeplr/jobs (`lib/schedules.js`)
+
+**The engine has no timer of its own.** The one in the source is the lease heartbeat of a run being moved (a liveness renewal, not a schedule). Two kinds of timed work, both run by the jobs scheduler:
+
+1. **A workflow "On a schedule" is a job.** Saving the workflow keeps a job with the workflow's id, action `workflow-scheduled`, its `cron` and `timezone`, named "Workflow: <name>", in the workflow's company. The `Workflow` model does it after every write that can change it — a save, a publish, a trigger switched off or changed to another kind, a delete — after the save commits (`queryContext.afterCommit`; the job is in another database). Unpublished, switched off, another kind, or deleted: the job is removed.
+   - **It is on the Jobs screen**, and **pausing it there pauses the workflow**. Saving the workflow again keeps the pause (`@xeplr/jobs` `keepSchedule` never changes `status`).
+   - **The run is for the slot the job was due at** (`system.dueAt`), so `{trigger.dueAt}` and the `period`'s `{trigger.window}` are what they were with the engine's own tick, in the trigger's zone.
+   - **A run that cannot start** fails the job's run with the reason (on the Jobs screen), and is recorded as a skip on the trigger's state.
+   - A job that could not be kept is recorded on the trigger's state (`lastSkipReason`) and logged.
+2. **The due work is one system job**, `workflow-due`, every minute, kept by `startEngine` when it has `keepSchedule`. It runs `sweep()`: runs whose process died, Wait boxes past their time, overdue tasks, reminders and escalations, file and email watches. Each piece is claimed in the database, so two processes running it do each thing once. It belongs to every company (`'*'`) and is **read-only on every screen, Super Admin included** (`@xeplr/jobs` migrations/0012); Run now is allowed. **It answers in counts only** — `{ recovered, timedOut, pastDue, reminded, woken, watched }` — because its runs are listed to every company.
+
+**The host wires it**, in-process, the way it wires `startJob`:
+
+```js
+engine.jobActions.forEach(jobs.registerAction);   // every process that runs jobs (API, a separate jobs service)
+await engine.startEngine({ db, startJob, keepSchedule: jobs.keepSchedule, onTask });   // the process that serves the API
+```
+
+A process that runs jobs but saves no workflows (a separate scheduler service) registers the actions and passes `onTask`, and needs no `keepSchedule`. **Without `@xeplr/jobs` nothing is due-checked**: a Wait box never wakes, no reminder is sent, a crashed run is never picked up. There is no fallback timer.
 
 ## Conditions written simply (`lib/conditions.js`)
 
@@ -427,7 +454,7 @@ Why: each of these used to save, and then the live run ended with "No transition
 
 ## Jobs as steps and as triggers (`lib/jobs.js`)
 
-A job meets a workflow in two places, and both are ordinary workflows:
+A job meets a workflow in two places, and both are ordinary workflows (a third — jobs as the engine's clock — is [above](#the-clock-is-xeplrjobs-libschedulesjs)):
 
 - **As a step:** `job-run` starts a job and parks (a `wait` step) until it reports back. The run carries on with its result.
   - **A busy job is waited for** (`whenBusy: 'wait'`, the default): a job runs one at a time, so the step tries to start it again every `busyRetrySeconds` (30) for up to `busyWaitMinutes` (10), then fails with `JOB_BUSY` saying how long it tried. `whenBusy: 'fail'` fails at once. It only goes on once the job has started, so nothing runs past a job that did not run. The wait is held in the process: a restart during it ends the step.
@@ -471,7 +498,7 @@ The next job takes only `window` and the inputs it lists in `acceptsInputs`; `@x
 **The host connects jobs, in-process.** The engine never imports jobs:
 
 ```js
-await engine.startEngine({ db, startJob: (jobId, body) => jobs.trigger(jobId, body) });
+await engine.startEngine({ db, startJob: (jobId, body) => jobs.trigger(jobId, body), keepSchedule: jobs.keepSchedule });
 await jobs.init({ /* … */ onFinish: (report) => engine.jobFinished(report) });
 ```
 
@@ -501,7 +528,7 @@ For something arriving, one optional limit: **`tooLongAmount` + `tooLongUnit`** 
 - **A person's task is not waited for here.** An approval or a screen has its own lateness (due dates); one place for "a person is late", not two.
 - **It is always a wait step:** saved as `auto`, the model makes it `wait`.
 
-**How it wakes.** The step writes on its resume key when to wake (`wakeAt` and `wakeOutput`) and what to check (`watch`, `nextCheckAt`), and the run parks as every wait does. `waits.wakeDue()` answers due keys and runs due checks, each through `resumeByKey`, which spends the key in one transaction: a wait is woken once, however many processes sweep, and an arrival and its "too long" cannot both win. A check is claimed by moving `nextCheckAt` forward with a conditional update, so two processes check once. **It adds no timer:** `wakeDue()` runs inside the sweep that already finds runs nobody is moving (every 30 s). A host that turns the sweep off calls `engine.waits.wakeDue()` from a scheduled job. A wait outlives the process that parked it: everything is on its key.
+**How it wakes.** The step writes on its resume key when to wake (`wakeAt` and `wakeOutput`) and what to check (`watch`, `nextCheckAt`), and the run parks as every wait does. `waits.wakeDue()` answers due keys and runs due checks, each through `resumeByKey`, which spends the key in one transaction: a wait is woken once, however many processes sweep, and an arrival and its "too long" cannot both win. A check is claimed by moving `nextCheckAt` forward with a conditional update, so two processes check once. **It adds no timer:** `wakeDue()` runs inside the sweep, which the system job `workflow-due` runs every minute — so a wait is woken within about a minute of its time. A wait outlives the process that parked it: everything is on its key.
 
 The older ways stay for code that uses them: a step's `timeoutMs` (a wait that fails as `TIMED_OUT`) and a step that keeps checking (below). A designer offers the Wait step and the `file` / `email` triggers instead.
 
@@ -536,7 +563,7 @@ registers it (hidden from the step palette); the host creates the job.
 npm test          # node test/run.mjs — each *.test.mjs in its own process
 ```
 
-`test/run.mjs` gives every suite a scratch `XEPLR_DATA_DIR` unless one is set. No database or network needed, except the suites marked "On a real Postgres" and `triggers.test.mjs`, which run on a real Postgres when `WORKFLOW_TEST_PG='{"host":…,"port":…,"user":…,"password":…}'` is set (scratch databases, created and dropped) and is skipped otherwise. CI and the release start a throwaway Postgres and set it, so neither ships on a skipped suite. `npm install` first: the peers install with it.
+`test/run.mjs` gives every suite a scratch `XEPLR_DATA_DIR` unless one is set. No database or network needed, except the suites marked "On a real Postgres", `oneClock.test.mjs` and `triggers.test.mjs`, which run on a real Postgres when `WORKFLOW_TEST_PG='{"host":…,"port":…,"user":…,"password":…}'` is set (scratch databases, created and dropped) and is skipped otherwise. CI and the release start a throwaway Postgres and set it, so neither ships on a skipped suite. `npm install` first: the peers install with it.
 
 | Suite | Covers |
 |---|---|
@@ -548,16 +575,17 @@ npm test          # node test/run.mjs — each *.test.mjs in its own process
 - a trigger switched off, and a draft, never firing
 - a loop stopped
 - a workflow that cannot start, recorded as a skip
-- the schedule's first sight, its due time, two ticks starting it once, a changed cron
+- a schedule as a job: kept on save in its company with its cron and zone, none for one switched off or a draft, the due-work system job; **the real jobs scheduler starting it** for the slot it was due at, with the month before in Kolkata; **pausing the job pausing the workflow**, a re-save keeping the pause, resuming it; the job following a new cron, a draft, a switch-off, another kind, a delete, a removal; no schedule without jobs connected
 - migration 0015 turning an old job chain into a workflow that runs, with its key and `when` arrows
 - migration 0016 repairing one converted early, and changing nothing on a second run |
-| `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered; the file steps offered, `file-delete` among them; `workflow-poll` registered but hidden |
+| `oneClock.test.mjs` | **No `setInterval` in the source but the lease heartbeat**, and no loop to start; on a real Postgres with the real jobs scheduler: the due-work system job kept on start, every company's, kept once; **a Wait box not woken with no clock, then woken by the due job with two schedulers running (`oneClock.child.mjs`), the step after it run once**; the due job answering in counts only |
+| `actionCatalog.test.mjs` | Ready vs placeholder detection; registered names are kebab-case; `spawnProgram` not offered; `decide` and `job-run` offered; the file steps offered, `file-delete` among them; `workflow-poll` registered but hidden; the jobs' own `workflow-scheduled` and `workflow-due` never offered as steps |
 | `waits.test.mjs` | On a real Postgres, with real files: waiting some time (parked, not woken early, woken once it passed); until a date (past wakes, ahead stays, a bare day is midnight, an unreadable one fails saying so); a file arriving in time taking the normal arrow with the file, nothing in time taking "Took too long", the run that got its file not woken again; **a wait woken by another process, and two processes at the same instant running the next step once**; a step saved as `auto` parking anyway; the `file` trigger noting what was there, starting one run per new file with `{trigger.file}`, starting none for the same files again, and refusing a trigger with no folder |
 | `stepProgress.test.mjs` | On a real Postgres: a step's numbers and log readable from outside while it runs, and the last of them once it ends, in order; a hundred reports written as the newest only; a cancel stopping the step part-way and the case ending `CANCELLED`; a cancel written by another process stopping it at its next report |
 | `polling.test.mjs` | On a real Postgres: a run parking on a step that keeps checking, the step not run on arrival; a tick finding nothing starting nothing and recording the check; each find a run of its own, with what was found and the earlier steps' outputs, linked to the listening run, which keeps waiting; a failed check recorded while it keeps listening; cancelling stopping it; an `each` arrow giving a run per file; what counts as found, and an action's own rule; a step that does not poll versioned as before |
 | `runningSafely.test.mjs` | On a real Postgres: a loop stopped at `maxStepRuns`; a failure routed by its arrows with its error readable; an `each` arrow never past its limit, joining once; children that paused and were resumed still letting the parent join; `job-run` waiting for a busy job, failing at once with `whenBusy: fail`, and giving up after `busyWaitMinutes` |
 | `screensInWorkflows.test.mjs` | On a real Postgres: a review screen handed rows, assigned to Accounts and listed only for Accounts (and a Super Admin); refused to another role; needing one of its own buttons; Approve and Send back taking their own arrows with the ticked rows; nothing waiting for another company |
-| `periodsAndMemory.test.mjs` | On a real Postgres: a monthly schedule firing on the 1st with September's window in India and its required input filled from it; `recall`/`remember` making a second run for the same month do nothing and a new month run; memory per workflow and per company; `forget` |
+| `periodsAndMemory.test.mjs` | On a real Postgres with the real jobs scheduler: a monthly schedule's job firing on the 1st with September's window in India and its required input filled from it; `recall`/`remember` making a second run for the same month do nothing and a new month run; memory per workflow and per company; `forget` |
 | `typedValues.test.mjs` | On a real Postgres: an http-request through a saved API connection (token never recorded) and a db-fetch through a saved database connection, its id recorded and never the login, and a deleted connection failing the step; rows from one step filtered by the data step as a list; a period written as a month in a zone; text fields get text, numbers and lists keep their type; a bad template fails the run by step |
 | `envExposed.test.mjs` | Nothing exposed by default; exact, case-sensitive matching; globs fail closed (against real `interpolateAll`) |
 | `requires.test.mjs` | Every relative `require` in this package points at a file (Node only notices a missing one when the line runs; a bundler refuses it up front) |

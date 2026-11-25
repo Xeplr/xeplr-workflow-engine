@@ -42,7 +42,6 @@ await engine.startEngine({
     name: WF_DB, connection: PG, connectionName: 'workflow_tasks_test',
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } }
   },
-  schedule: false, recover: false,
   onTask: (event, task) => { told.push({ event, taskId: task.id, role: task.assigneeRole }) }
 })
 const Workflow = engine.db.model('Workflow')

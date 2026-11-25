@@ -1,5 +1,6 @@
 // A scheduled run for a period, and a workflow that remembers what it did,
-// through the real engine on a real Postgres.
+// through the real engine and the real @xeplr/jobs scheduler on a real
+// Postgres: the schedule is a job, and its run is for the slot it was due at.
 //
 // Needs WORKFLOW_TEST_PG = '{"host":"localhost","port":5432,"user":"…","password":"…"}'.
 import { createRequire } from 'node:module'
@@ -14,6 +15,7 @@ if (!PG) {
 const { registerApplication, runWithMt } = require('@xeplr/db')
 const { generateId } = require('@xeplr/utils/lib/helpers')
 const actions = require('@xeplr/actions')
+const jobs = require('@xeplr/jobs')
 const engine = require('../index.js')
 
 const results = []
@@ -21,6 +23,7 @@ const check = (n, c, extra) => { results.push(c); console.log((c ? '  ok   ' : '
 
 const STAMP = Date.now()
 const WF_DB = 'xeplr_wf_period_test_' + STAMP
+const JOBS_DB = 'xeplr_wf_period_jobs_test_' + STAMP
 const MT = { mtId1: 'c' + (STAMP % 100000), mtId2: 'w' + (STAMP % 100000) }
 const OTHER = { mtId1: 'x' + (STAMP % 100000), mtId2: 'y' + (STAMP % 100000) }
 
@@ -28,11 +31,19 @@ registerApplication('xeplr-workflow-test')
 const worked = []
 actions.register({ name: 'period-work', inputSchema: [{ name: 'note', type: 'string' }], execute: async (ctx) => { worked.push(ctx.input.note); return { file: '/data/recon/' + ctx.input.note + '.xlsx' } } })
 
+engine.jobActions.forEach((a) => jobs.registerAction(a))
+const jobsConn = await jobs.init({ database: JOBS_DB, connection: PG, connectionName: 'jobs_period_test', defaultActions: false, migrate: true })
 await engine.startEngine({
   db: { name: WF_DB, connection: PG, connectionName: 'workflow_period_test',
     mts: { l1: { name: 'companyId', header: 'x-company-id' }, l2: { name: 'workspaceId', header: 'x-workspace-id' } } },
-  schedule: false
+  keepSchedule: jobs.keepSchedule
 })
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+async function until(fn, ms = 8000) {
+  const end = Date.now() + ms
+  while (Date.now() < end) { const v = await fn(); if (v) return v; await sleep(40) }
+  return null
+}
 const Workflow = engine.db.model('Workflow')
 const Step = engine.db.model('WorkflowStep')
 const Run = engine.db.model('WorkflowRun')
@@ -61,12 +72,13 @@ try {
       trigger: { kind: 'schedule', cron: '30 7 1 * *', timezone: 'Asia/Kolkata', period: 'previous-month',
         params: { month: '{trigger.window.from|date:YYYY-MM:Asia/Kolkata}' } }
     })
-    // First sight sets the due time; the next tick past it fires.
-    await engine.triggers.tick(new Date('2026-09-15T00:00:00Z'))
-    const fired = await engine.triggers.tick(new Date('2026-10-01T03:00:00Z'))
+    // Its job, due on 1 October at 07:30 in India: the scheduler runs it.
+    await jobsConn('jobs').where({ id: w.id }).update({ nextRunAt: '2026-10-01T02:00:00.000Z' })
+    jobs.startScheduler({ intervalMs: 150 })
+    const run = await until(async () => { const r = await Run.query().where({ workflowId: w.id }).first(); return r && r.status !== 'running' ? r : null })
+    jobs.stopScheduler()
     const runs = await Run.query().where({ workflowId: w.id })
-    const run = runs[0]
-    check('it fired once', fired.length === 1 && fired[0].fired === true && runs.length === 1, fired)
+    check('it fired once', runs.length === 1 && run.trigger === 'schedule' && run.triggerData.dueAt === '2026-10-01T02:00:00.000Z', runs.map((r) => r.triggerData))
     check('...for September, as the window of the month before, in India', run && run.triggerData.window.from === '2026-08-31T18:30:00.000Z' && run.triggerData.window.to === '2026-09-30T18:30:00.000Z', run && run.triggerData)
     check('...with its required input filled from the period', run && run.params.month === '2026-09' && run.status === 'success', run && { params: run.params, status: run.status, error: run.error })
     check('the work ran for September', worked.join() === '2026-09', worked)
@@ -105,9 +117,13 @@ try {
 } catch (err) {
   check('no error', false, err.stack || err.message)
 } finally {
+  jobs.stopScheduler()
+  await sleep(200)
+  await jobsConn.destroy().catch(() => {})
   await engine.db.conn().destroy().catch(() => {})
   const admin = require('knex')({ client: 'pg', connection: { ...PG, database: 'postgres' } })
   await admin.raw(`DROP DATABASE IF EXISTS "${WF_DB}" WITH (FORCE)`).catch(() => {})
+  await admin.raw(`DROP DATABASE IF EXISTS "${JOBS_DB}" WITH (FORCE)`).catch(() => {})
   await admin.destroy()
   const failed = results.filter((c) => !c).length
   console.log(`\n${results.length - failed}/${results.length} passed`)

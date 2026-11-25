@@ -7,6 +7,10 @@ const triggers = require('../lib/triggers.js')
 const results = []
 const check = (n, c, extra) => { results.push(c); console.log((c ? '  ok   ' : '  FAIL ') + n + (c || extra === undefined ? '' : ' — ' + JSON.stringify(extra))) }
 
+// A schedule is run by @xeplr/jobs: refused until the host connects it.
+const noKeeper = (() => { try { triggers.validate({ kind: 'schedule', cron: '0 9 * * 1' }) } catch (e) { return e } })()
+check('without jobs connected, a schedule is refused in words', noKeeper && noKeeper.code === 'TRIGGER_INVALID' && /jobs scheduler/.test(noKeeper.message), noKeeper && noKeeper.message)
+require('../lib/jobs.js').setScheduleKeeper(require('@xeplr/jobs').keepSchedule)
 const list = triggers.catalog()
 const kinds = list.map((k) => k.kind)
 check('every kind the engine accepts, and only those', JSON.stringify(kinds) === JSON.stringify(triggers.kinds()), kinds)

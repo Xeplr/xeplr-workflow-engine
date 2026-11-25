@@ -7,6 +7,8 @@ var { BaseModel } = require('@xeplr/db');
 // WorkflowRunEdge — is deliberately a separate model family, not part of
 // this hierarchy: a run is not something you edit by saving the workflow.
 
+var SYNC_IDS = '__workflowScheduleIds';
+
 class Workflow extends BaseModel {
   static get tableName() { return 'workflows'; }
   static get idColumn() { return 'id'; }
@@ -59,6 +61,38 @@ class Workflow extends BaseModel {
   $beforeUpdate(opt, ctx) {
     super.$beforeUpdate(opt, ctx);
     if (this.trigger !== undefined) this.trigger = require('../lib/triggers').validate(this.trigger);
+  }
+
+  // A WORKFLOW "ON A SCHEDULE" IS A JOB (lib/schedules.js). Every write that
+  // can change whether it has one — a save, a publish, a trigger switched off,
+  // a delete (a soft one: isActive = false) — keeps that job in line, after
+  // the save commits. The ids are taken BEFORE an update: afterwards a deleted
+  // row no longer matches the query's own isActive filter.
+  static async beforeUpdate(args) {
+    var rows = await args.asFindQuery().select(this.tableName + '.id');
+    args.context[SYNC_IDS] = (args.context[SYNC_IDS] || []).concat(rows.map(function(r) { return r.id; }));
+  }
+
+  static async afterUpdate(args) {
+    var ids = args.context[SYNC_IDS] || [];
+    args.context[SYNC_IDS] = [];
+    await require('../lib/schedules').syncLater(ids, args.context, args.transaction);
+  }
+
+  static async afterInsert(args) {
+    var ids = (args.inputItems || []).map(function(w) { return w.id; });
+    await require('../lib/schedules').syncLater(ids, args.context, args.transaction);
+  }
+
+  static async beforeDelete(args) {
+    var rows = await args.asFindQuery().select(this.tableName + '.id');
+    args.context[SYNC_IDS] = (args.context[SYNC_IDS] || []).concat(rows.map(function(r) { return r.id; }));
+  }
+
+  static async afterDelete(args) {
+    var ids = args.context[SYNC_IDS] || [];
+    args.context[SYNC_IDS] = [];
+    await require('../lib/schedules').syncLater(ids, args.context, args.transaction);
   }
 
   static get relationMappings() {
